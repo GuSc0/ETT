@@ -663,12 +663,22 @@ class MainWindow(QMainWindow):
         if self.deselect_enabled_cb.isChecked():
             deselected = [name for name, action in self.deselect_param_checkboxes.items() if action.isChecked()]
 
+        # Parameter weights (nur anzeigen, wenn aktiviert)
+        weights_text = "(disabled)"
+        if self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked():
+            if not self.parameter_weights:
+                weights_text = "(none)"
+            else:
+                parts = [f"{k} = {self._format_weight(v)}" for k, v in sorted(self.parameter_weights.items())]
+                weights_text = ", ".join(parts)
+
         msg = (
             f"Mode: {mode}\n"
             f"Groups selected: {len(selected_groups)}\n"
             f"Tasks selected: {len(selected_tasks)}\n"
             f"Result domains: {', '.join(domains) if domains else '(none)'}\n"
-            f"Deselected parameters: {', '.join(deselected) if deselected else '(none)'}"
+            f"Deselected parameters: {', '.join(deselected) if deselected else '(none)'}\n"
+            f"Parameter weights: {weights_text}"
         )
         QMessageBox.information(self, "Show Results (placeholder)", msg)
 
