@@ -9,7 +9,7 @@ import pandas as pd
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QLineEdit, QComboBox, QCheckBox, QGroupBox, QGridLayout,
-    QFrame, QMessageBox, QFileDialog, QMenu, QMenuBar, QSplitter
+    QFrame, QMessageBox, QFileDialog, QMenu, QMenuBar, QSplitter, QSlider
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction
@@ -27,61 +27,66 @@ from dialogs import GroupParticipantsDialog, GroupTasksDialog
 
 class MainWindow(QMainWindow):
     """Main application window."""
-    
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Eye Tracking Analysis Tool")
         self.setMinimumSize(1200, 720)
-        
+
         # Result domain checkboxes
         self.result_domain_vars: Dict[str, QCheckBox] = {}
-        
+
         # Result group/task checkboxes
         self.result_group_checkboxes: Dict[str, QCheckBox] = {}
         self.result_task_checkboxes: Dict[str, QCheckBox] = {}
-        
+
         # Deselect parameters
         self.deselect_param_checkboxes: Dict[str, QCheckBox] = {}
-        
+
+        # Weighting parameters
+        self.weighting_enabled_cb: Optional[QCheckBox] = None
+        self.weight_rows: list[tuple[QComboBox, QSlider]] = []
+        self.parameter_weights: Dict[str, float] = {}
+
         self._setup_ui()
-    
+
     def _setup_ui(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(10, 10, 10, 10)
-        
+
         # Top bar
         topbar = QHBoxLayout()
-        
+
         self.load_btn = QPushButton("Load TSV")
         self.load_btn.setFixedWidth(120)
         self.load_btn.clicked.connect(self._load_tsv)
         topbar.addWidget(self.load_btn)
-        
+
         self.group_participants_btn = QPushButton("Group Participants")
         self.group_participants_btn.setFixedWidth(150)
         self.group_participants_btn.setEnabled(False)
         self.group_participants_btn.clicked.connect(self._open_group_participants)
         topbar.addWidget(self.group_participants_btn)
-        
+
         # Button-Text wie gewünscht: "Name Tasks"
         self.group_tasks_btn = QPushButton("Name Tasks")
         self.group_tasks_btn.setFixedWidth(120)
         self.group_tasks_btn.setEnabled(False)
         self.group_tasks_btn.clicked.connect(self._open_group_tasks)
         topbar.addWidget(self.group_tasks_btn)
-        
+
         self.file_path_edit = QLineEdit()
         self.file_path_edit.setReadOnly(True)
         self.file_path_edit.setPlaceholderText("No file loaded")
         topbar.addWidget(self.file_path_edit)
-        
+
         main_layout.addLayout(topbar)
-        
+
         # Listboxes section
         listbox_layout = QHBoxLayout()
-        
+
         # Participants listbox
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
@@ -91,7 +96,7 @@ class MainWindow(QMainWindow):
         self.participants_list.setMaximumHeight(120)
         left_layout.addWidget(self.participants_list)
         listbox_layout.addWidget(left_widget)
-        
+
         # Tasks listbox
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
@@ -101,24 +106,24 @@ class MainWindow(QMainWindow):
         self.tasks_list.setMaximumHeight(120)
         right_layout.addWidget(self.tasks_list)
         listbox_layout.addWidget(right_widget)
-        
+
         main_layout.addLayout(listbox_layout)
-        
+
         # Separator
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
         main_layout.addWidget(separator)
-        
+
         # Results section
         results_label = QLabel("Results")
         results_label.setStyleSheet("font-weight: bold; font-size: 14px;")
         main_layout.addWidget(results_label)
-        
+
         # Mode selection
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(QLabel("Show results for:"))
-        
+
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([
             "Only group mean",
@@ -129,57 +134,81 @@ class MainWindow(QMainWindow):
         mode_layout.addWidget(self.mode_combo)
         mode_layout.addStretch()
         main_layout.addLayout(mode_layout)
-        
+
         # Groups and Tasks frames
         sel_layout = QHBoxLayout()
-        
+
         self.groups_group = QGroupBox("Groups")
         self.groups_layout = QVBoxLayout(self.groups_group)
         sel_layout.addWidget(self.groups_group)
-        
+
         self.tasks_group = QGroupBox("Tasks")
         self.tasks_layout = QGridLayout(self.tasks_group)
         sel_layout.addWidget(self.tasks_group)
-        
+
         main_layout.addLayout(sel_layout)
-        
+
         # Bottom row: Result domain and Deselect parameters
         bottom_layout = QHBoxLayout()
-        
+
         # Result domain
         domain_group = QGroupBox("Result domain")
         domain_layout = QHBoxLayout(domain_group)
-        
+
         for name in ["Rank", "Radar Chart", "Task Completion Time"]:
             cb = QCheckBox(name)
             cb.setChecked(True)
             self.result_domain_vars[name] = cb
             domain_layout.addWidget(cb)
-        
+
         domain_layout.addStretch()
         bottom_layout.addWidget(domain_group)
-        
+
         # Deselect parameters
         deselect_group = QGroupBox("Deselect Parameters")
         deselect_layout = QHBoxLayout(deselect_group)
-        
+
         self.deselect_enabled_cb = QCheckBox("Enable Deselect")
         self.deselect_enabled_cb.stateChanged.connect(self._toggle_deselect_menu)
         deselect_layout.addWidget(self.deselect_enabled_cb)
-        
+
         self.deselect_btn = QPushButton("None")
         self.deselect_btn.setEnabled(False)
         self.deselect_btn.clicked.connect(self._show_deselect_menu)
         deselect_layout.addWidget(self.deselect_btn)
-        
+
         deselect_layout.addStretch()
         bottom_layout.addWidget(deselect_group)
-        
+
+        # Weighting parameters
+        weighting_group = QGroupBox("Weighting Parameters")
+        weighting_outer = QVBoxLayout(weighting_group)
+
+        # Toggle row: checkbox + label rechts
+        weighting_toggle_row = QHBoxLayout()
+        self.weighting_enabled_cb = QCheckBox()
+        self.weighting_enabled_cb.setChecked(False)
+        self.weighting_enabled_cb.setEnabled(False)
+        self.weighting_enabled_cb.stateChanged.connect(self._on_weighting_toggled)
+        weighting_toggle_row.addWidget(self.weighting_enabled_cb)
+        weighting_toggle_row.addWidget(QLabel("Enable custom parameter weights"))
+        weighting_toggle_row.addStretch()
+        weighting_outer.addLayout(weighting_toggle_row)
+
+        # Container für dynamische Zeilen
+        self.weighting_rows_container = QWidget()
+        self.weighting_rows_layout = QVBoxLayout(self.weighting_rows_container)
+        self.weighting_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.weighting_rows_layout.setSpacing(6)
+        weighting_outer.addWidget(self.weighting_rows_container)
+
+        bottom_layout.addWidget(weighting_group)
+
         main_layout.addLayout(bottom_layout)
-        
+
         # Action buttons
         action_layout = QHBoxLayout()
-        
+
         self.show_results_btn = QPushButton("Show Results")
         self.show_results_btn.setFixedWidth(150)
         self.show_results_btn.setEnabled(False)
@@ -191,24 +220,27 @@ class MainWindow(QMainWindow):
         self.normalize_btn.setEnabled(False)
         self.normalize_btn.clicked.connect(self._on_normalize)
         action_layout.addWidget(self.normalize_btn)
-        
+
         self.exec_summary_btn = QPushButton("Print Executive Summary")
         self.exec_summary_btn.setFixedWidth(180)
         self.exec_summary_btn.setEnabled(False)
         self.exec_summary_btn.clicked.connect(self._on_print_exec_summary)
         action_layout.addWidget(self.exec_summary_btn)
-        
+
         action_layout.addStretch()
         main_layout.addLayout(action_layout)
-        
+
         main_layout.addStretch()
-        
+
         # Initialize deselect menu
         self._build_deselect_menu()
-        
+
+        # Initialize weighting UI (disabled by default)
+        self._reset_weighting_ui()
+
         # Initial population
         self._refresh_group_task_toggles()
-    
+
     def _load_tsv(self) -> None:
         """Load and validate a TSV file."""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -217,16 +249,16 @@ class MainWindow(QMainWindow):
             "",
             "TSV files (*.tsv);;All files (*.*)"
         )
-        
+
         if not file_path:
             return
-        
+
         # Validate format
         result = validate_tsv_format(file_path, EXPECTED_COLUMNS)
         if not result.ok:
             QMessageBox.critical(self, "Format error", result.message or "Unknown format error.")
             return
-        
+
         # Load data
         try:
             state.df = pd.read_csv(file_path, sep="\t")
@@ -236,24 +268,29 @@ class MainWindow(QMainWindow):
 
         # Reset normalized data (must be recomputed for new file)
         state.normalized_df = None
-        
+
+        # Reset weighting UI/weights (parameters list may change later)
+        if self.weighting_enabled_cb is not None:
+            self.weighting_enabled_cb.setChecked(False)
+        self._reset_weighting_ui()
+
         # Update UI with file path
         state.loaded_file_path = file_path
         self.file_path_edit.setText(file_path)
-        
+
         # Reset caches
         state.participants_cache = []
         state.tasks_cache = []
-        
+
         # Clear listboxes
         self.participants_list.clear()
         self.tasks_list.clear()
-        
+
         # Disable action buttons during loading
         self.group_participants_btn.setEnabled(False)
         self.group_tasks_btn.setEnabled(False)
         self._set_main_action_buttons_enabled(False)
-        
+
         # Extract participants
         try:
             state.participants_cache = extract_participants(state.df, column="Participant")
@@ -261,7 +298,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Participant scan failed", str(e))
             state.df = None
             return
-        
+
         # Extract tasks
         try:
             state.tasks_cache = extract_tasks_from_toi(state.df, column="TOI")
@@ -269,42 +306,45 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Task scan failed", str(e))
             state.df = None
             return
-        
+
         # Keep only labels for tasks that exist
         state.task_labels = {k: v for k, v in state.task_labels.items() if k in set(state.tasks_cache)}
-        
+
         # Update listboxes
         for p in state.participants_cache:
             self.participants_list.addItem(p)
-        
+
         self._refresh_tasks_listbox()
-        
+
         # Enable group buttons
         self.group_participants_btn.setEnabled(bool(state.participants_cache))
         self.group_tasks_btn.setEnabled(bool(state.tasks_cache))
-        
+
+        if self.weighting_enabled_cb is not None:
+            self.weighting_enabled_cb.setEnabled(True)
+
         self._set_main_action_buttons_enabled(True)
         self._refresh_group_task_toggles()
-        
+
         QMessageBox.information(
-            self, 
-            "Success", 
+            self,
+            "Success",
             f"Loaded {len(state.df)} rows.\n"
             f"Found {len(state.participants_cache)} participants and {len(state.tasks_cache)} tasks."
         )
-    
+
     def _refresh_tasks_listbox(self) -> None:
         """Refresh the tasks listbox with formatted task names."""
         self.tasks_list.clear()
         for t in state.tasks_cache:
             self.tasks_list.addItem(state.format_task(t))
-    
+
     def _set_main_action_buttons_enabled(self, enabled: bool) -> None:
         """Enable or disable main action buttons."""
         self.show_results_btn.setEnabled(enabled)
         self.normalize_btn.setEnabled(enabled)
         self.exec_summary_btn.setEnabled(enabled)
-    
+
     def _refresh_group_task_toggles(self) -> None:
         """Refresh the checkbox lists in the Results section."""
         # Clear existing group checkboxes
@@ -312,20 +352,20 @@ class MainWindow(QMainWindow):
             item = self.groups_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        
+
         # Clear existing task checkboxes
         while self.tasks_layout.count():
             item = self.tasks_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        
+
         self.result_group_checkboxes.clear()
         self.result_task_checkboxes.clear()
-        
+
         # Groups toggles
         effective_groups = state.get_effective_participant_groups()
         effective_names = state.get_effective_group_names()
-        
+
         if not effective_groups:
             label = QLabel("(Load a TSV file first)")
             label.setStyleSheet("color: #666;")
@@ -337,16 +377,16 @@ class MainWindow(QMainWindow):
                 cb.setChecked(True)
                 self.result_group_checkboxes[gid] = cb
                 self.groups_layout.addWidget(cb)
-        
+
         self.groups_layout.addStretch()
-        
+
         # Tasks toggles
         if not state.tasks_cache:
             label = QLabel("(Load a TSV file first)")
             label.setStyleSheet("color: #666;")
             self.tasks_layout.addWidget(label, 0, 0)
             return
-        
+
         cols = 8
         row = 0
         col = 0
@@ -359,48 +399,190 @@ class MainWindow(QMainWindow):
             if col >= cols:
                 col = 0
                 row += 1
-    
+
     def _build_deselect_menu(self) -> None:
         """Build the deselect parameters menu."""
         self.deselect_menu = QMenu(self)
         self.deselect_param_checkboxes.clear()
-        
+
         for name in PARAMETER_OPTIONS:
             action = QAction(name, self)
             action.setCheckable(True)
             action.triggered.connect(self._update_deselect_label)
             self.deselect_menu.addAction(action)
             self.deselect_param_checkboxes[name] = action
-    
+
+    def _reset_weighting_ui(self) -> None:
+        """Clear all weighting rows and internal weights; keep toggle state."""
+        self.parameter_weights.clear()
+        self.weight_rows.clear()
+
+        # Clear UI rows
+        if hasattr(self, "weighting_rows_layout"):
+            while self.weighting_rows_layout.count():
+                item = self.weighting_rows_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+        # If enabled and we have parameters, create first row
+        if self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked():
+            self._ensure_next_weight_row()
+
+    def _on_weighting_toggled(self, state_val: int) -> None:
+        enabled = state_val == Qt.CheckState.Checked.value
+        if not enabled:
+            self._reset_weighting_ui()
+            return
+        self._reset_weighting_ui()
+
+    def _selected_weight_params(self) -> set[str]:
+        selected: set[str] = set()
+        for combo, _slider in self.weight_rows:
+            val = combo.currentData()
+            if isinstance(val, str) and val:
+                selected.add(val)
+        return selected
+
+    def _available_weight_params(self) -> list[str]:
+        # PARAMETER_OPTIONS sind die “Parameter” im Tool
+        selected = self._selected_weight_params()
+        return [p for p in PARAMETER_OPTIONS if p not in selected]
+
+    def _create_weight_row(self) -> None:
+        available = self._available_weight_params()
+        if not available:
+            return
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+
+        combo = QComboBox()
+        combo.setFixedWidth(260)
+        combo.addItem("Select parameter...", None)
+        for p in available:
+            combo.addItem(p, p)
+
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setMinimum(0)
+        slider.setMaximum(3)
+        slider.setValue(1)
+        slider.setSingleStep(1)
+        slider.setPageStep(1)
+        slider.setFixedWidth(220)
+        slider.setEnabled(False)  # erst aktivieren, wenn Parameter gewählt
+
+        # Signals
+        combo.currentIndexChanged.connect(lambda _i, c=combo, s=slider: self._on_weight_row_changed(c, s))
+        slider.valueChanged.connect(lambda _v, c=combo, s=slider: self._on_weight_row_changed(c, s))
+
+        row_layout.addWidget(combo)
+        row_layout.addWidget(slider)
+        row_layout.addStretch()
+
+        self.weighting_rows_layout.addWidget(row)
+        self.weight_rows.append((combo, slider))
+
+    def _on_weight_row_changed(self, combo: QComboBox, slider: QSlider) -> None:
+        # Wenn Toggle aus: ignorieren
+        if self.weighting_enabled_cb is None or not self.weighting_enabled_cb.isChecked():
+            return
+
+        param = combo.currentData()
+        if not isinstance(param, str) or not param:
+            slider.setEnabled(False)
+            return
+
+        slider.setEnabled(True)
+
+        # Gewicht speichern (int 0..3)
+        self.parameter_weights[param] = float(slider.value())
+
+        # Alle Combos neu aufbauen, damit keine Duplikate möglich sind
+        self._rebuild_weight_combos(keep_current=True)
+
+        # Wenn diese Zeile “aktiv” ist, nächste Zeile sicherstellen
+        self._ensure_next_weight_row()
+
+    def _rebuild_weight_combos(self, keep_current: bool = True) -> None:
+        selected = self._selected_weight_params()
+
+        for combo, slider in self.weight_rows:
+            current = combo.currentData() if keep_current else None
+
+            # Block signals während rebuild
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("Select parameter...", None)
+
+            # In dieser Combo darf current weiterhin drin sein
+            allowed: list[str] = []
+            for p in PARAMETER_OPTIONS:
+                if p == current:
+                    allowed.append(p)
+                elif p not in selected:
+                    allowed.append(p)
+
+            for p in allowed:
+                combo.addItem(p, p)
+
+            # Restore selection
+            if isinstance(current, str) and current:
+                idx = combo.findData(current)
+                combo.setCurrentIndex(idx if idx >= 0 else 0)
+                slider.setEnabled(True)
+            else:
+                combo.setCurrentIndex(0)
+                slider.setEnabled(False)
+
+            combo.blockSignals(False)
+
+    def _ensure_next_weight_row(self) -> None:
+        if self.weighting_enabled_cb is None or not self.weighting_enabled_cb.isChecked():
+            return
+
+        available = self._available_weight_params()
+        if not available:
+            return
+
+        if not self.weight_rows:
+            self._create_weight_row()
+            return
+
+        last_combo, _last_slider = self.weight_rows[-1]
+        last_param = last_combo.currentData()
+        if isinstance(last_param, str) and last_param:
+            self._create_weight_row()
+
     def _toggle_deselect_menu(self, state_val: int) -> None:
         """Toggle the deselect parameters menu button."""
         self.deselect_btn.setEnabled(state_val == Qt.CheckState.Checked.value)
-    
+
     def _show_deselect_menu(self) -> None:
         """Show the deselect parameters menu."""
         self.deselect_menu.exec(self.deselect_btn.mapToGlobal(self.deselect_btn.rect().bottomLeft()))
-    
+
     def _update_deselect_label(self) -> None:
         """Update the deselect button label."""
         count = sum(1 for action in self.deselect_param_checkboxes.values() if action.isChecked())
         self.deselect_btn.setText("None" if count == 0 else f"{count} deselected")
-    
+
     def _open_group_participants(self) -> None:
         """Open the group participants dialog."""
         if not state.participants_cache:
             QMessageBox.information(self, "No data", "Load a TSV file first.")
             return
-        
+
         dialog = GroupParticipantsDialog(self)
         if dialog.exec() == GroupParticipantsDialog.DialogCode.Accepted:
             self._refresh_group_task_toggles()
-    
+
     def _open_group_tasks(self) -> None:
         """Open the group tasks dialog."""
         if not state.tasks_cache:
             QMessageBox.information(self, "No data", "Load a TSV file first.")
             return
-        
+
         dialog = GroupTasksDialog(self)
         if dialog.exec() == GroupTasksDialog.DialogCode.Accepted:
             self._refresh_tasks_listbox()
@@ -429,22 +611,22 @@ class MainWindow(QMainWindow):
             "Normalization complete",
             "Normalized data stored in state.normalized_df (baseline: 0a, fallback: 0b).",
         )
-    
+
     def _on_show_results(self) -> None:
         """Handle Show Results button click."""
         if state.df is None:
             QMessageBox.information(self, "No data", "Load a TSV file first.")
             return
-        
+
         selected_groups = [gid for gid, cb in self.result_group_checkboxes.items() if cb.isChecked()]
         selected_tasks = [tid for tid, cb in self.result_task_checkboxes.items() if cb.isChecked()]
         domains = [name for name, cb in self.result_domain_vars.items() if cb.isChecked()]
         mode = self.mode_combo.currentText()
-        
+
         deselected = []
         if self.deselect_enabled_cb.isChecked():
             deselected = [name for name, action in self.deselect_param_checkboxes.items() if action.isChecked()]
-        
+
         msg = (
             f"Mode: {mode}\n"
             f"Groups selected: {len(selected_groups)}\n"
@@ -453,11 +635,14 @@ class MainWindow(QMainWindow):
             f"Deselected parameters: {', '.join(deselected) if deselected else '(none)'}"
         )
         QMessageBox.information(self, "Show Results (placeholder)", msg)
-    
+
     def _on_print_exec_summary(self) -> None:
         """Handle Print Executive Summary button click."""
         if state.df is None:
             QMessageBox.information(self, "No data", "Load a TSV file first.")
             return
-        QMessageBox.information(self, "Executive Summary (placeholder)", 
-                                "This will generate the executive summary later.")
+        QMessageBox.information(
+            self,
+            "Executive Summary (placeholder)",
+            "This will generate the executive summary later.",
+        )
