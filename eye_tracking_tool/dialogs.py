@@ -9,9 +9,10 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QComboBox,
     QFrame, QScrollArea, QGroupBox, QGridLayout, QAbstractItemView,
-    QMessageBox
+    QMessageBox, QStyledItemDelegate
 )
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QTextDocument
 
 from state import state
 
@@ -311,12 +312,22 @@ class GroupParticipantsDialog(QDialog):
         self.accept()
 
 
+class PlainTextDelegate(QStyledItemDelegate):
+    """Forces plain-text rendering in item views (prevents HTML/RichText issues)."""
+
+    def initStyleOption(self, option, index):  # type: ignore[override]
+        super().initStyleOption(option, index)
+        doc = QTextDocument()
+        doc.setHtml(option.text)
+        option.text = doc.toPlainText()
+
+
 class GroupTasksDialog(QDialog):
     """Dialog for grouping tasks with task labeling."""
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Group Tasks")
+        self.setWindowTitle("Task Labels")
         self.setMinimumSize(980, 640)
         self.setModal(True)
 
@@ -332,6 +343,7 @@ class GroupTasksDialog(QDialog):
 
         naming_layout.addWidget(QLabel("Task:"))
         self.task_combo = QComboBox()
+        self.task_combo.setItemDelegate(PlainTextDelegate(self.task_combo))
         self.task_combo.addItems([state.format_task(t) for t in state.tasks_cache])
         self.task_combo.currentIndexChanged.connect(self._on_task_changed)
         naming_layout.addWidget(self.task_combo)
@@ -350,74 +362,16 @@ class GroupTasksDialog(QDialog):
 
         main_layout.addWidget(naming_group)
 
-        # Scrollable groups area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        container = QWidget()
-        self.container_layout = QVBoxLayout(container)
-        self.container_layout.setContentsMargins(0, 0, 0, 0)
-        self.container_layout.setSpacing(4)
-        self.container_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        # Header
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(8)
-        header.addWidget(QLabel("Group name"), stretch=1, alignment=Qt.AlignmentFlag.AlignTop)
-        header.addWidget(QLabel("Tasks"), stretch=2, alignment=Qt.AlignmentFlag.AlignTop)
-        self.container_layout.addLayout(header)
-
-        # Group rows
-        self.group_name_edits: List[QLineEdit] = []
-        self.group_items: List[List[str]] = []
-        self.select_btns: List[QPushButton] = []
-        self.row_widgets: List[QWidget] = []
-
-        existing_ids = sorted(state.task_groups.keys())
-
-        for i in range(self.max_groups):
-            gid = existing_ids[i] if i < len(existing_ids) else f"T{i+1}"
-
-            row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 2, 0, 2)
-            row_layout.setSpacing(8)
-
-            name_edit = QLineEdit(state.task_group_names.get(gid, f"Group {i+1}"))
-            name_edit.setFixedWidth(200)
-            row_layout.addWidget(name_edit)
-
-            items = state.task_groups.get(gid, []).copy()
-
-            btn = QPushButton("Select tasks...")
-            btn.clicked.connect(lambda checked, idx=i: self._select_tasks(idx))
-            row_layout.addWidget(btn, stretch=1)
-
-            self.group_name_edits.append(name_edit)
-            self.group_items.append(items)
-            self.select_btns.append(btn)
-            self.row_widgets.append(row_widget)
-
-            self.container_layout.addWidget(row_widget)
-            self._update_btn_text(i)
-
-        scroll.setWidget(container)
-        main_layout.addWidget(scroll)
-
         # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        save_btn = QPushButton("Save & Apply")
-        save_btn.clicked.connect(self._save_apply)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
 
-        btn_layout.addWidget(save_btn)
-        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(close_btn)
         main_layout.addLayout(btn_layout)
 
-        self._update_row_visibility()
         self._on_task_changed()
 
     def _on_task_changed(self) -> None:
@@ -455,74 +409,4 @@ class GroupTasksDialog(QDialog):
         self.task_combo.addItems([state.format_task(t) for t in state.tasks_cache])
         self.task_combo.setCurrentIndex(current_idx)
 
-        # Refresh button texts
-        for i in range(self.max_groups):
-            self._update_btn_text(i)
-
         self._update_preview()
-
-    def _already_selected_elsewhere(self, current_row: int) -> List[str]:
-        s: Set[str] = set()
-        for r, items in enumerate(self.group_items):
-            if r != current_row:
-                s.update(items)
-        return sorted(s)
-
-    def _update_btn_text(self, row_idx: int) -> None:
-        sel = self.group_items[row_idx]
-        if not sel:
-            self.select_btns[row_idx].setText("Select tasks...")
-        elif len(sel) <= 6:
-            self.select_btns[row_idx].setText(", ".join(state.format_task(t) for t in sel))
-        else:
-            self.select_btns[row_idx].setText(f"{len(sel)} selected")
-
-    def _update_row_visibility(self) -> None:
-        for i in range(self.max_groups):
-            if i == 0:
-                self.row_widgets[i].show()
-            elif self.group_items[i - 1]:
-                self.row_widgets[i].show()
-            else:
-                self.row_widgets[i].hide()
-
-    def _select_tasks(self, row_idx: int) -> None:
-        dialog = MultiSelectDialog(
-            self,
-            title=f"Select tasks for {self.group_name_edits[row_idx].text() or f'Group {row_idx+1}'}",
-            items=state.tasks_cache,
-            selected=self.group_items[row_idx],
-            gray_hint_items=self._already_selected_elsewhere(row_idx),
-            display_func=state.format_task,
-        )
-
-        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result is not None:
-            self.group_items[row_idx] = dialog.result
-            self._update_btn_text(row_idx)
-            self._update_row_visibility()
-
-    def _save_apply(self) -> None:
-        new_groups: dict = {}
-        new_names: dict = {}
-
-        for i in range(self.max_groups):
-            gid = f"T{i+1}"
-            name = self.group_name_edits[i].text().strip() or f"Group {i+1}"
-            items = self.group_items[i]
-
-            if not items and i > 0:
-                continue
-
-            new_groups[gid] = items
-            new_names[gid] = name
-
-        if all(len(v) == 0 for v in new_groups.values()):
-            state.task_groups.clear()
-            state.task_group_names.clear()
-        else:
-            state.task_groups.clear()
-            state.task_groups.update(new_groups)
-            state.task_group_names.clear()
-            state.task_group_names.update(new_names)
-
-        self.accept()
