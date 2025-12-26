@@ -234,6 +234,12 @@ class MainWindow(QMainWindow):
         self.normalize_btn.clicked.connect(self._on_normalize)
         action_layout.addWidget(self.normalize_btn)
 
+        self.calc_metric_averages_btn = QPushButton("Calculate metric averages")
+        self.calc_metric_averages_btn.setFixedWidth(200)
+        self.calc_metric_averages_btn.setEnabled(False)
+        self.calc_metric_averages_btn.clicked.connect(self._on_calculate_metric_averages)
+        action_layout.addWidget(self.calc_metric_averages_btn)
+
         self.exec_summary_btn = QPushButton("Print Executive Summary")
         self.exec_summary_btn.setFixedWidth(180)
         self.exec_summary_btn.setEnabled(False)
@@ -281,6 +287,9 @@ class MainWindow(QMainWindow):
 
         # Reset normalized data (must be recomputed for new file)
         state.normalized_df = None
+        state.metric_averages_df = None
+        if hasattr(self, "calc_metric_averages_btn"):
+            self.calc_metric_averages_btn.setEnabled(False)
 
         # Reset weighting UI/weights (parameters list may change later)
         if self.weighting_enabled_cb is not None:
@@ -356,6 +365,7 @@ class MainWindow(QMainWindow):
         """Enable or disable main action buttons."""
         self.show_results_btn.setEnabled(enabled)
         self.normalize_btn.setEnabled(enabled)
+        self.calc_metric_averages_btn.setEnabled(enabled)
         self.exec_summary_btn.setEnabled(enabled)
 
     def _refresh_group_task_toggles(self) -> None:
@@ -642,10 +652,63 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Normalize failed", str(e))
             return
 
+        if hasattr(self, "calc_metric_averages_btn"):
+            self.calc_metric_averages_btn.setEnabled(True)
+
         QMessageBox.information(
             self,
             "Normalization complete",
             "Normalized data stored in state.normalized_df (baseline: 0a, fallback: 0b).",
+        )
+
+    def _on_calculate_metric_averages(self) -> None:
+        """Berechnet Mittelwert und Standardabweichung je Participant und Task aus state.normalized_df."""
+        if state.normalized_df is None:
+            QMessageBox.information(
+                self,
+                "No normalized data",
+                "Bitte zuerst 'Normalize' ausführen (state.normalized_df ist leer).",
+            )
+            return
+
+        df = state.normalized_df
+
+        # Spalten prüfen
+        if "Participant" not in df.columns or "TOI" not in df.columns:
+            QMessageBox.critical(self, "Missing columns", "normalized_df benötigt Spalten 'Participant' und 'TOI'.")
+            return
+
+        # Task-ID wie beim Task-Scan: Suffix nach letztem '_' (oder kompletter String)
+        toi = df["TOI"].astype(str).str.strip()
+        task_id = toi.str.rsplit("_", n=1).str[-1].str.strip()
+
+        # Nur numerische Metriken aggregieren
+        metric_cols = df.select_dtypes(include="number").columns.tolist()
+        metric_cols = [c for c in metric_cols if c not in {"Participant", "TOI"}]
+
+        if not metric_cols:
+            QMessageBox.information(self, "No numeric metrics", "Keine numerischen Spalten zum Aggregieren gefunden.")
+            return
+
+        tmp = df.copy()
+        tmp["_task_id"] = task_id
+
+        # Aggregation: mean + std je Participant x Task
+        grouped = tmp.groupby(["Participant", "_task_id"], dropna=False)[metric_cols].agg(["mean", "std"])
+
+        # Spaltennamen flach machen: "<metric>_mean", "<metric>_std"
+        grouped.columns = [f"{metric}_{stat}" for (metric, stat) in grouped.columns.to_list()]
+
+        # Index zurück in Spalten
+        result = grouped.reset_index().rename(columns={"_task_id": "Task"})
+
+        state.metric_averages_df = result
+
+        QMessageBox.information(
+            self,
+            "Metric averages calculated",
+            f"Fertig. Ergebnis in state.metric_averages_df gespeichert.\n"
+            f"Zeilen: {len(result)} | Spalten: {len(result.columns)}",
         )
 
     def _on_show_results(self) -> None:

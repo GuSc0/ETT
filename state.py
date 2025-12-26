@@ -30,6 +30,7 @@ class AppState:
         # Data
         self.df: Optional[pd.DataFrame] = None
         self.normalized_df: Optional[pd.DataFrame] = None
+        self.metric_averages_df: Optional[pd.DataFrame] = None
         self.loaded_file_path: str = ""
         
         # Caches
