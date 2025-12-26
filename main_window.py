@@ -662,7 +662,10 @@ class MainWindow(QMainWindow):
         )
 
     def _on_calculate_metric_averages(self) -> None:
-        """Berechnet Mittelwert und Standardabweichung je Participant und Task aus state.normalized_df."""
+        """
+        Berechnet Mittelwert und Standardabweichung je Participant und Task aus state.normalized_df.
+        Zusätzlich: TCT (Mean/Std) je Participant und Task als zusätzliche Spalten (ohne Überschreiben).
+        """
         if state.normalized_df is None:
             QMessageBox.information(
                 self,
@@ -693,7 +696,7 @@ class MainWindow(QMainWindow):
         tmp = df.copy()
         tmp["_task_id"] = task_id
 
-        # Aggregation: mean + std je Participant x Task
+        # Aggregation: mean + std je Participant x Task (für alle numerischen Spalten)
         grouped = tmp.groupby(["Participant", "_task_id"], dropna=False)[metric_cols].agg(["mean", "std"])
 
         # Spaltennamen flach machen: "<metric>_mean", "<metric>_std"
@@ -702,13 +705,60 @@ class MainWindow(QMainWindow):
         # Index zurück in Spalten
         result = grouped.reset_index().rename(columns={"_task_id": "Task"})
 
+        # --- Zusätzlich: TCT mean/std berechnen und als zusätzliche Spalten mergen ---
+        tct_col: Optional[str] = None
+        if "Duration" in df.columns:
+            tct_col = "Duration"
+        else:
+            # heuristische Suche (case-insensitive)
+            candidates = [
+                "tct",
+                "task completion time",
+                "task_completion_time",
+                "taskcompletiontime",
+                "completion_time",
+                "task time",
+                "task_time",
+            ]
+            lower_map = {c.lower(): c for c in df.columns}
+            for key in candidates:
+                if key in lower_map:
+                    tct_col = lower_map[key]
+                    break
+
+        tct_added = False
+        tct_note = ""
+        if tct_col is None:
+            tct_note = "Keine TCT-Spalte gefunden (erwartet z.B. 'Duration')."
+        elif not pd.api.types.is_numeric_dtype(df[tct_col]):
+            tct_note = f"TCT-Spalte '{tct_col}' ist nicht numerisch."
+        else:
+            tct_tmp = tmp[["Participant", "_task_id", tct_col]].copy()
+            tct_grouped = (
+                tct_tmp.groupby(["Participant", "_task_id"], dropna=False)[tct_col]
+                .agg(["mean", "std"])
+                .reset_index()
+                .rename(columns={"_task_id": "Task", "mean": "tct_mean", "std": "tct_std"})
+            )
+
+            # Nicht überschreiben: falls Spalten schon existieren, eindeutige Namen wählen
+            if "tct_mean" in result.columns or "tct_std" in result.columns:
+                # sehr defensiv: falls schon vorhanden, suffix anhängen
+                tct_grouped = tct_grouped.rename(columns={"tct_mean": "tct_mean_tct", "tct_std": "tct_std_tct"})
+
+            result = result.merge(tct_grouped, on=["Participant", "Task"], how="left")
+            tct_added = True
+            tct_note = f"TCT berechnet aus Spalte '{tct_col}'."
+
         state.metric_averages_df = result
 
+        extra = f"\n{tct_note}" if tct_note else ""
         QMessageBox.information(
             self,
             "Metric averages calculated",
             f"Fertig. Ergebnis in state.metric_averages_df gespeichert.\n"
-            f"Zeilen: {len(result)} | Spalten: {len(result.columns)}",
+            f"Zeilen: {len(result)} | Spalten: {len(result.columns)}"
+            f"{extra}",
         )
 
     def _on_show_results(self) -> None:
