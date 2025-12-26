@@ -16,7 +16,12 @@ from PyQt6.QtGui import QAction
 
 from state import state
 from models import EXPECTED_COLUMNS, PARAMETER_OPTIONS
-from data_processor import validate_tsv_format, extract_participants, extract_tasks_from_toi
+from data_processor import (
+    validate_tsv_format,
+    extract_participants,
+    extract_tasks_from_toi,
+    normalize_by_participant_baseline,
+)
 from dialogs import GroupParticipantsDialog, GroupTasksDialog
 
 
@@ -180,6 +185,12 @@ class MainWindow(QMainWindow):
         self.show_results_btn.setEnabled(False)
         self.show_results_btn.clicked.connect(self._on_show_results)
         action_layout.addWidget(self.show_results_btn)
+
+        self.normalize_btn = QPushButton("Normalize")
+        self.normalize_btn.setFixedWidth(150)
+        self.normalize_btn.setEnabled(False)
+        self.normalize_btn.clicked.connect(self._on_normalize)
+        action_layout.addWidget(self.normalize_btn)
         
         self.exec_summary_btn = QPushButton("Print Executive Summary")
         self.exec_summary_btn.setFixedWidth(180)
@@ -222,6 +233,9 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Load error", str(e))
             return
+
+        # Reset normalized data (must be recomputed for new file)
+        state.normalized_df = None
         
         # Update UI with file path
         state.loaded_file_path = file_path
@@ -288,6 +302,7 @@ class MainWindow(QMainWindow):
     def _set_main_action_buttons_enabled(self, enabled: bool) -> None:
         """Enable or disable main action buttons."""
         self.show_results_btn.setEnabled(enabled)
+        self.normalize_btn.setEnabled(enabled)
         self.exec_summary_btn.setEnabled(enabled)
     
     def _refresh_group_task_toggles(self) -> None:
@@ -390,6 +405,30 @@ class MainWindow(QMainWindow):
         if dialog.exec() == GroupTasksDialog.DialogCode.Accepted:
             self._refresh_tasks_listbox()
             self._refresh_group_task_toggles()
+
+    def _on_normalize(self) -> None:
+        """Normalize numeric data per participant by baseline task 0a (fallback 0b)."""
+        if state.df is None:
+            QMessageBox.information(self, "No data", "Load a TSV file first.")
+            return
+
+        try:
+            state.normalized_df = normalize_by_participant_baseline(
+                state.df,
+                participant_col="Participant",
+                task_col="TOI",
+                baseline_primary="0a",
+                baseline_fallback="0b",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Normalize failed", str(e))
+            return
+
+        QMessageBox.information(
+            self,
+            "Normalization complete",
+            "Normalized data stored in state.normalized_df (baseline: 0a, fallback: 0b).",
+        )
     
     def _on_show_results(self) -> None:
         """Handle Show Results button click."""
