@@ -9,7 +9,8 @@ import pandas as pd
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QLineEdit, QComboBox, QCheckBox, QGroupBox, QGridLayout,
-    QFrame, QMessageBox, QFileDialog, QMenu, QMenuBar, QSplitter, QSlider
+    QFrame, QMessageBox, QFileDialog, QMenu, QMenuBar, QSplitter, QSlider,
+    QDialog, QTextEdit
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction
@@ -47,6 +48,9 @@ class MainWindow(QMainWindow):
         self.weighting_enabled_cb: Optional[QCheckBox] = None
         self.weight_rows: list[tuple[QComboBox, QSlider, QLabel]] = []
         self.parameter_weights: Dict[str, float] = {}
+
+        # Snapshot of the last rank computation inputs (to detect stale results)
+        self._participant_rank_signature: Optional[dict] = None
 
         self._setup_ui()
 
@@ -295,6 +299,7 @@ class MainWindow(QMainWindow):
         state.normalized_df = None
         state.metric_averages_df = None
         state.participant_rank_df = None
+        self._participant_rank_signature = None
         if hasattr(self, "calc_metric_averages_btn"):
             self.calc_metric_averages_btn.setEnabled(False)
 
@@ -660,6 +665,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Normalize failed", str(e))
             return
 
+        # Normalisierung macht vorhandene Rank-Ergebnisse potentiell stale
+        self._participant_rank_signature = None
+        state.participant_rank_df = None
+
         if hasattr(self, "calc_metric_averages_btn"):
             self.calc_metric_averages_btn.setEnabled(True)
 
@@ -734,7 +743,6 @@ class MainWindow(QMainWindow):
                     tct_col = lower_map[key]
                     break
 
-        tct_added = False
         tct_note = ""
         if tct_col is None:
             tct_note = "Keine TCT-Spalte gefunden (erwartet z.B. 'Duration')."
@@ -751,11 +759,9 @@ class MainWindow(QMainWindow):
 
             # Nicht überschreiben: falls Spalten schon existieren, eindeutige Namen wählen
             if "tct_mean" in result.columns or "tct_std" in result.columns:
-                # sehr defensiv: falls schon vorhanden, suffix anhängen
                 tct_grouped = tct_grouped.rename(columns={"tct_mean": "tct_mean_tct", "tct_std": "tct_std_tct"})
 
             result = result.merge(tct_grouped, on=["Participant", "Task"], how="left")
-            tct_added = True
             tct_note = f"TCT berechnet aus Spalte '{tct_col}'."
 
         state.metric_averages_df = result
@@ -768,6 +774,32 @@ class MainWindow(QMainWindow):
             f"Zeilen: {len(result)} | Spalten: {len(result.columns)}"
             f"{extra}",
         )
+
+    def _current_rank_signature(self) -> dict:
+        """Build a signature of inputs that affect participant_rank_df."""
+        dataset_used = "normalized" if state.normalized_df is not None else "raw"
+
+        selected_group_ids = [gid for gid, cb in self.result_group_checkboxes.items() if cb.isChecked()]
+        selected_task_ids = [tid for tid, cb in self.result_task_checkboxes.items() if cb.isChecked()]
+
+        excluded = []
+        if self.deselect_enabled_cb.isChecked():
+            excluded = sorted([name for name, action in self.deselect_param_checkboxes.items() if action.isChecked()])
+
+        weights_enabled = bool(self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked())
+        weights = {}
+        if weights_enabled:
+            # nur stabile, relevante Gewichte (sortiert)
+            weights = {k: float(v) for k, v in sorted(self.parameter_weights.items())}
+
+        return {
+            "dataset_used": dataset_used,
+            "selected_group_ids": sorted(selected_group_ids),
+            "selected_task_ids": sorted(selected_task_ids),
+            "excluded_metrics": excluded,
+            "weights_enabled": weights_enabled,
+            "weights": weights,
+        }
 
     def _on_calculate_participant_rank(self) -> None:
         """
@@ -909,7 +941,6 @@ class MainWindow(QMainWindow):
             return
 
         # --- Schritt 1: Werte je Participant×Task berechnen ---
-        # Wir berechnen pro Metrik eine Spalte in einem Wide-DF: index=(Participant, Task), columns=metric
         base_index = tmp.groupby(["Participant", "_task_id"], dropna=False).size().reset_index()[["Participant", "_task_id"]]
         base_index = base_index.rename(columns={"_task_id": "Task"}).drop_duplicates()
 
@@ -938,8 +969,6 @@ class MainWindow(QMainWindow):
 
         for m in usable_metrics:
             harder_high = bool(metric_specs[m]["harder_high"])
-            # pandas rank: ascending=True => kleinster Wert rank 1
-            # Für "harder_high": wir wollen große Werte rank 1 => ascending=False
             ascending = not harder_high
             ranks_df[m] = (
                 values_df.groupby("Participant", dropna=False)[m]
@@ -947,9 +976,6 @@ class MainWindow(QMainWindow):
             )
 
         # --- Schritt 3: Gewichtete Rank-Summe + finaler Task-Rank ---
-        # NaN-Ranks: wenn eine Metrik für einen Task fehlt, wird sie aus der Summe ausgeschlossen
-        # (d.h. wir summieren nur über vorhandene Ranks). Optional könnte man hier bestrafen;
-        # aktuell ist es "neutral" (keine Addition).
         weighted_sum = pd.Series(0.0, index=ranks_df.index)
         weight_sum = pd.Series(0.0, index=ranks_df.index)
 
@@ -960,25 +986,22 @@ class MainWindow(QMainWindow):
             weighted_sum = weighted_sum + (r.fillna(0.0) * w)
             weight_sum = weight_sum + (mask.astype(float) * w)
 
-        # Wenn für eine Zeile gar keine Metrik vorhanden war -> NaN
         final_score = weighted_sum.where(weight_sum > 0, other=pd.NA)
 
         out = ranks_df[["Participant", "Task"]].copy()
         out["rank_sum"] = final_score
 
-        # Finales Ranking: kleinste rank_sum = hardest (Rank 1)
         out["final_rank"] = out.groupby("Participant", dropna=False)["rank_sum"].rank(
             method="average", ascending=True, na_option="keep"
         )
 
-        # Optional: auch die einzelnen Metrik-Ranks mitgeben
         for m in usable_metrics:
             out[f"{m}__rank"] = ranks_df[m]
 
-        # Sortierung für Anzeige/Export
         out = out.sort_values(["Participant", "final_rank", "Task"], ascending=[True, True, True]).reset_index(drop=True)
 
         state.participant_rank_df = out
+        self._participant_rank_signature = self._current_rank_signature()
 
         note = ""
         if missing_metrics:
@@ -992,6 +1015,56 @@ class MainWindow(QMainWindow):
             f"Verwendete Metriken: {', '.join(usable_metrics)}"
             f"{note}",
         )
+
+    def _show_rank_results_popup(
+        self,
+        title: str,
+        header: str,
+        sections: list[tuple[str, pd.DataFrame]],
+        warnings: list[str],
+    ) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setModal(True)
+        dlg.setMinimumSize(900, 700)
+
+        layout = QVBoxLayout(dlg)
+
+        text = QTextEdit()
+        text.setReadOnly(True)
+
+        parts: list[str] = []
+        parts.append(header.strip())
+        parts.append("")
+
+        for section_title, df in sections:
+            parts.append(section_title)
+            parts.append("-" * len(section_title))
+            if df.empty:
+                parts.append("(keine Daten)")
+            else:
+                # df ist bereits auf Rank/Task/Score reduziert
+                parts.append(df.to_string(index=False))
+            parts.append("")
+
+        if warnings:
+            parts.append("Warnings")
+            parts.append("--------")
+            for w in warnings:
+                parts.append(f"- {w}")
+            parts.append("")
+
+        text.setPlainText("\n".join(parts))
+        layout.addWidget(text)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        dlg.exec()
 
     def _on_show_results(self) -> None:
         """Handle Show Results button click."""
@@ -1017,6 +1090,156 @@ class MainWindow(QMainWindow):
                 parts = [f"{k} = {self._format_weight(v)}" for k, v in sorted(self.parameter_weights.items())]
                 weights_text = ", ".join(parts)
 
+        # --- Rank domain: show computed participant rank results ---
+        if "Rank" in domains:
+            if state.participant_rank_df is None or state.participant_rank_df.empty:
+                QMessageBox.information(
+                    self,
+                    "Rank Results not available",
+                    "Keine Rank-Ergebnisse vorhanden.\nBitte zuerst 'Calculate Participant Rank' ausführen.",
+                )
+                return
+
+            current_sig = self._current_rank_signature()
+            if self._participant_rank_signature != current_sig:
+                QMessageBox.information(
+                    self,
+                    "Rank Results stale",
+                    "Die Rank-Ergebnisse passen nicht zu den aktuellen UI-Auswahlen (Groups/Tasks/Deselect/Weights oder Datenbasis).\n"
+                    "Bitte 'Calculate Participant Rank' erneut ausführen.",
+                )
+                return
+
+            rank_df = state.participant_rank_df.copy()
+
+            # Scope: Tasks
+            task_scope = selected_tasks if selected_tasks else state.tasks_cache.copy()
+            # Scope: Participants via groups
+            effective_groups = state.get_effective_participant_groups()
+            effective_names = state.get_effective_group_names()
+
+            group_ids = selected_groups if selected_groups else list(effective_groups.keys())
+            if not group_ids:
+                group_ids = ["ALL"]
+
+            warnings: list[str] = []
+            sections: list[tuple[str, pd.DataFrame]] = []
+
+            dataset_used = "normalized" if state.normalized_df is not None else "raw"
+            excluded_metrics = sorted(deselected) if deselected else []
+            weights_list = []
+            if self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked():
+                weights_list = [f"{k}={self._format_weight(v)}" for k, v in sorted(self.parameter_weights.items())]
+
+            # Helper: format a table
+            def _table_from_scores(df_scores: pd.DataFrame) -> pd.DataFrame:
+                # df_scores: columns Task, rank_sum
+                t = df_scores.copy()
+                t = t.sort_values(["rank_sum", "Task"], ascending=[True, True]).reset_index(drop=True)
+                t.insert(0, "Rank", range(1, len(t) + 1))
+                t = t.rename(columns={"rank_sum": "Score"})
+                t = t[["Rank", "Task", "Score"]]
+                return t
+
+            # Build participant list per group
+            group_to_participants: dict[str, list[str]] = {}
+            for gid in group_ids:
+                members = effective_groups.get(gid, [])
+                if not members:
+                    warnings.append(f"Gruppe '{effective_names.get(gid, gid)}' hat 0 Mitglieder (übersprungen).")
+                    continue
+                group_to_participants[gid] = members
+
+            # If no groups had members, fallback to all participants
+            if not group_to_participants:
+                all_p = state.participants_cache.copy()
+                if not all_p:
+                    QMessageBox.information(self, "No participants", "Keine Teilnehmer gefunden.")
+                    return
+                group_to_participants = {"ALL": all_p}
+
+            # Filter rank_df to task scope early
+            rank_df = rank_df[rank_df["Task"].isin(task_scope)]
+
+            # Determine which participants have which tasks (for warnings)
+            # We'll warn if a participant is missing any selected task in the rank_df.
+            for gid, members in group_to_participants.items():
+                for p in members:
+                    p_tasks = set(rank_df.loc[rank_df["Participant"] == p, "Task"].astype(str).tolist())
+                    for t in task_scope:
+                        if t not in p_tasks:
+                            warnings.append(f"{p} hatte keine Zeilen für Task {t}")
+
+            # Mode handling
+            def _add_group_mean_sections() -> None:
+                for gid, members in group_to_participants.items():
+                    gname = effective_names.get(gid, gid)
+                    sub = rank_df[rank_df["Participant"].isin(members)]
+                    if sub.empty:
+                        warnings.append(f"Gruppe '{gname}' hat nach Filterung keine Daten (übersprungen).")
+                        continue
+                    # mean rank_sum per task
+                    g_scores = (
+                        sub.groupby("Task", dropna=False)["rank_sum"]
+                        .mean()
+                        .reset_index()
+                    )
+                    g_table = _table_from_scores(g_scores)
+                    sections.append((f"Group mean: {gname}", g_table))
+
+            def _add_individual_sections() -> None:
+                # participants inside selected groups (or all fallback)
+                seen: set[str] = set()
+                for _gid, members in group_to_participants.items():
+                    for p in members:
+                        if p in seen:
+                            continue
+                        seen.add(p)
+                        sub = rank_df[rank_df["Participant"] == p][["Task", "rank_sum"]].copy()
+                        if sub.empty:
+                            warnings.append(f"{p} hat nach Filterung keine Daten (übersprungen).")
+                            continue
+                        p_table = _table_from_scores(sub)
+                        sections.append((f"Participant: {p}", p_table))
+
+            if mode == "Only group mean":
+                _add_group_mean_sections()
+            elif mode == "Each participant for selected groups":
+                _add_individual_sections()
+            elif mode == "Group mean and individual participants":
+                _add_group_mean_sections()
+                _add_individual_sections()
+            else:
+                warnings.append(f"Unbekannter Mode '{mode}' (zeige Individual-Rankings).")
+                _add_individual_sections()
+
+            # Header paragraph
+            # #participants/#tasks should reflect the popup scope (after group/task selection)
+            participants_in_scope: set[str] = set()
+            for members in group_to_participants.values():
+                participants_in_scope.update(members)
+            participants_in_scope = {p for p in participants_in_scope if p in set(rank_df["Participant"].unique())}
+
+            tasks_in_scope = sorted(set(task_scope) & set(rank_df["Task"].unique()))
+
+            header = (
+                f"Dataset: {dataset_used}; "
+                f"Participants: {len(participants_in_scope)}; "
+                f"Tasks: {len(tasks_in_scope)}; "
+                f"Mode: {mode}; "
+                f"Excluded metrics: {', '.join(excluded_metrics) if excluded_metrics else '(none)'}; "
+                f"Custom weights: {', '.join(weights_list) if weights_list else '(none)'}"
+            )
+
+            self._show_rank_results_popup(
+                title="Rank Results",
+                header=header,
+                sections=sections,
+                warnings=warnings,
+            )
+            return
+
+        # Fallback: existing placeholder message
         msg = (
             f"Mode: {mode}\n"
             f"Groups selected: {len(selected_groups)}\n"
