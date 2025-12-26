@@ -29,8 +29,9 @@ class AppState:
         """Reset all state to initial values."""
         # Data
         self.df: Optional[pd.DataFrame] = None
-        self.normalized_df: Optional[pd.DataFrame] = None
+        self.normalized_df: Optional[p.DataFrame] = None
         self.metric_averages_df: Optional[pd.DataFrame] = None
+        self.participant_rank_df: Optional[pd.DataFrame] = None
         self.loaded_file_path: str = ""
         
         # Caches

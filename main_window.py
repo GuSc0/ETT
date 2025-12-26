@@ -52,13 +52,13 @@ class MainWindow(QMainWindow):
 
     # --- Weighting slider mapping (QSlider is int-based) ---
     def _weight_slider_to_float(self, slider_val: int) -> float:
-        # 0..12 -> 0.00..3.00 in 0.25 steps
-        return float(slider_val) / 4.0
+        # 2..10 -> 1.0..5.0 in 0.5 steps
+        return float(slider_val) / 2.0
 
     def _weight_float_to_slider(self, weight: float) -> int:
-        # clamp + round to nearest 0.25 step
-        w = max(0.0, min(3.0, float(weight)))
-        return int(round(w * 4.0))
+        # clamp + round to nearest 0.5 step, then map to int
+        w = max(1.0, min(5.0, float(weight)))
+        return int(round(w * 2.0))
 
     def _format_weight(self, weight: float) -> str:
         return f"{weight:.2f}".rstrip("0").rstrip(".")
@@ -246,6 +246,12 @@ class MainWindow(QMainWindow):
         self.exec_summary_btn.clicked.connect(self._on_print_exec_summary)
         action_layout.addWidget(self.exec_summary_btn)
 
+        self.calc_participant_rank_btn = QPushButton("Calculate Participant Rank")
+        self.calc_participant_rank_btn.setFixedWidth(220)
+        self.calc_participant_rank_btn.setEnabled(False)
+        self.calc_participant_rank_btn.clicked.connect(self._on_calculate_participant_rank)
+        action_layout.addWidget(self.calc_participant_rank_btn)
+
         action_layout.addStretch()
         main_layout.addLayout(action_layout)
 
@@ -288,6 +294,7 @@ class MainWindow(QMainWindow):
         # Reset normalized data (must be recomputed for new file)
         state.normalized_df = None
         state.metric_averages_df = None
+        state.participant_rank_df = None
         if hasattr(self, "calc_metric_averages_btn"):
             self.calc_metric_averages_btn.setEnabled(False)
 
@@ -367,6 +374,7 @@ class MainWindow(QMainWindow):
         self.normalize_btn.setEnabled(enabled)
         self.calc_metric_averages_btn.setEnabled(enabled)
         self.exec_summary_btn.setEnabled(enabled)
+        self.calc_participant_rank_btn.setEnabled(enabled)
 
     def _refresh_group_task_toggles(self) -> None:
         """Refresh the checkbox lists in the Results section."""
@@ -487,9 +495,9 @@ class MainWindow(QMainWindow):
             combo.addItem(p, p)
 
         slider = QSlider(Qt.Orientation.Horizontal)
-        # 0..3 in 0.25 steps => 0..12
-        slider.setMinimum(0)
-        slider.setMaximum(12)
+        # 1.0..5.0 in 0.5 steps => 2..10
+        slider.setMinimum(2)
+        slider.setMaximum(10)
         slider.setValue(self._weight_float_to_slider(1.0))
         slider.setSingleStep(1)
         slider.setPageStep(1)
@@ -534,7 +542,7 @@ class MainWindow(QMainWindow):
         weight = self._weight_slider_to_float(slider.value())
         value_lbl.setText(self._format_weight(weight))
 
-        # Gewicht speichern (0.00..3.00 in 0.25er Schritten)
+        # Gewicht speichern (1.0..5.0 in 0.5er Schritten)
         self.parameter_weights[param] = float(weight)
 
         # Alle Combos neu aufbauen, damit keine Duplikate möglich sind
@@ -759,6 +767,230 @@ class MainWindow(QMainWindow):
             f"Fertig. Ergebnis in state.metric_averages_df gespeichert.\n"
             f"Zeilen: {len(result)} | Spalten: {len(result.columns)}"
             f"{extra}",
+        )
+
+    def _on_calculate_participant_rank(self) -> None:
+        """
+        Berechnet pro Participant ein Task-Ranking (hardest -> easiest) basierend auf kognitiver Last.
+
+        Vorgehen:
+        1) Metrikwerte je Participant×Task berechnen (mean über Zeilen).
+        2) Pro Participant je Metrik Tasks ranken (Rank 1 = hardest; ties = average).
+        3) Gewichtete Rank-Summe über Metriken bilden und Tasks nach kleinster Summe sortieren.
+        """
+        if state.df is None:
+            QMessageBox.information(self, "No data", "Load a TSV file first.")
+            return
+
+        df = state.normalized_df if state.normalized_df is not None else state.df
+
+        if "Participant" not in df.columns or "TOI" not in df.columns:
+            QMessageBox.critical(self, "Missing columns", "DataFrame benötigt Spalten 'Participant' und 'TOI'.")
+            return
+
+        # --- Auswahl: Tasks ---
+        selected_tasks = [tid for tid, cb in self.result_task_checkboxes.items() if cb.isChecked()]
+        if not selected_tasks:
+            selected_tasks = state.tasks_cache.copy()
+
+        # --- Auswahl: Participants (über Gruppen) ---
+        selected_group_ids = [gid for gid, cb in self.result_group_checkboxes.items() if cb.isChecked()]
+        effective_groups = state.get_effective_participant_groups()
+
+        selected_participants: list[str] = []
+        if selected_group_ids:
+            s = set()
+            for gid in selected_group_ids:
+                for p in effective_groups.get(gid, []):
+                    s.add(p)
+            selected_participants = sorted(s)
+        else:
+            selected_participants = state.participants_cache.copy()
+
+        if not selected_participants:
+            QMessageBox.information(self, "No participants", "Keine Teilnehmer ausgewählt/gefunden.")
+            return
+        if not selected_tasks:
+            QMessageBox.information(self, "No tasks", "Keine Tasks ausgewählt/gefunden.")
+            return
+
+        # --- Deselect Parameters ---
+        deselected: set[str] = set()
+        if self.deselect_enabled_cb.isChecked():
+            deselected = {name for name, action in self.deselect_param_checkboxes.items() if action.isChecked()}
+
+        metrics = [m for m in PARAMETER_OPTIONS if m not in deselected]
+        if not metrics:
+            QMessageBox.information(self, "No metrics", "Alle Metriken sind abgewählt (Deselect Parameters).")
+            return
+
+        # --- Weights ---
+        weights: Dict[str, float] = {m: 1.0 for m in metrics}
+        if self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked():
+            for m in metrics:
+                if m in self.parameter_weights:
+                    weights[m] = float(self.parameter_weights[m])
+
+        # --- Task-ID aus TOI ableiten (Suffix nach letztem '_') ---
+        tmp = df.copy()
+        tmp["_task_id"] = tmp["TOI"].astype(str).str.strip().str.rsplit("_", n=1).str[-1].str.strip()
+
+        # Filter auf Auswahl
+        tmp = tmp[tmp["Participant"].isin(selected_participants)]
+        tmp = tmp[tmp["_task_id"].isin(selected_tasks)]
+
+        if tmp.empty:
+            QMessageBox.information(
+                self,
+                "No data after filtering",
+                "Nach Filterung (Participants/Tasks) sind keine Datenzeilen übrig.",
+            )
+            return
+
+        # --- Metrik -> Spaltenmapping + Richtung (True: höher = härter) ---
+        # Referenz: TCT↑, SD(TCT)↑, Pupil Diameter↑, Saccade Velocity↓, Peak Saccade Velocity↓, Saccade Amplitude↓.
+        def _find_col_case_insensitive(candidates: list[str]) -> Optional[str]:
+            lower_map = {c.lower(): c for c in tmp.columns}
+            for cand in candidates:
+                if cand.lower() in lower_map:
+                    return lower_map[cand.lower()]
+            return None
+
+        metric_specs: Dict[str, Dict[str, object]] = {}
+
+        # TCT
+        tct_col = "Duration" if "Duration" in tmp.columns else _find_col_case_insensitive(
+            ["tct", "task_completion_time", "task completion time", "taskcompletiontime", "completion_time", "task_time"]
+        )
+        if tct_col is not None:
+            metric_specs["Task Completion Time (TCT)"] = {"col": tct_col, "agg": "mean", "harder_high": True}
+            metric_specs["Standard Deviation of TCT"] = {"col": tct_col, "agg": "std", "harder_high": True}
+
+        # Pupil
+        pupil_col = _find_col_case_insensitive(["Average_pupil_diameter", "pupil", "pupil_diameter", "average pupil diameter"])
+        if pupil_col is not None:
+            metric_specs["Pupil Diameter"] = {"col": pupil_col, "agg": "mean", "harder_high": True}
+
+        # Saccade velocity
+        sacc_vel_col = _find_col_case_insensitive(["Average_velocity", "saccade_velocity", "average velocity"])
+        if sacc_vel_col is not None:
+            metric_specs["Saccade Velocity"] = {"col": sacc_vel_col, "agg": "mean", "harder_high": False}
+
+        # Peak saccade velocity
+        peak_vel_col = _find_col_case_insensitive(["Peak_velocity", "peak_velocity", "peak saccade velocity"])
+        if peak_vel_col is not None:
+            metric_specs["Peak Saccade Velocity"] = {"col": peak_vel_col, "agg": "mean", "harder_high": False}
+
+        # Saccade amplitude
+        sacc_amp_col = _find_col_case_insensitive(["Saccade_amplitude", "saccade_amplitude", "saccade amplitude"])
+        if sacc_amp_col is not None:
+            metric_specs["Saccade Amplitude"] = {"col": sacc_amp_col, "agg": "mean", "harder_high": False}
+
+        # Nur Metriken verwenden, die wir auch wirklich berechnen können
+        usable_metrics: list[str] = []
+        missing_metrics: list[str] = []
+        for m in metrics:
+            if m in metric_specs:
+                col = metric_specs[m]["col"]
+                if isinstance(col, str) and col in tmp.columns and pd.api.types.is_numeric_dtype(tmp[col]):
+                    usable_metrics.append(m)
+                else:
+                    missing_metrics.append(m)
+            else:
+                missing_metrics.append(m)
+
+        if not usable_metrics:
+            QMessageBox.critical(
+                self,
+                "No usable metrics",
+                "Keine der ausgewählten Metriken konnte auf numerische Spalten gemappt werden.\n"
+                f"Ausgewählt: {metrics}",
+            )
+            return
+
+        # --- Schritt 1: Werte je Participant×Task berechnen ---
+        # Wir berechnen pro Metrik eine Spalte in einem Wide-DF: index=(Participant, Task), columns=metric
+        base_index = tmp.groupby(["Participant", "_task_id"], dropna=False).size().reset_index()[["Participant", "_task_id"]]
+        base_index = base_index.rename(columns={"_task_id": "Task"}).drop_duplicates()
+
+        values_df = base_index.copy()
+
+        for m in usable_metrics:
+            spec = metric_specs[m]
+            col = spec["col"]  # type: ignore[assignment]
+            agg = spec["agg"]  # type: ignore[assignment]
+            if not isinstance(col, str) or not isinstance(agg, str):
+                continue
+
+            g = tmp.groupby(["Participant", "_task_id"], dropna=False)[col]
+            if agg == "mean":
+                s = g.mean()
+            elif agg == "std":
+                s = g.std(ddof=1)
+            else:
+                raise ValueError(f"Unbekannte Aggregation: {agg}")
+
+            s = s.reset_index().rename(columns={"_task_id": "Task", col: m})
+            values_df = values_df.merge(s, on=["Participant", "Task"], how="left")
+
+        # --- Schritt 2: Pro Participant je Metrik ranken (Rank 1 = hardest) ---
+        ranks_df = values_df[["Participant", "Task"]].copy()
+
+        for m in usable_metrics:
+            harder_high = bool(metric_specs[m]["harder_high"])
+            # pandas rank: ascending=True => kleinster Wert rank 1
+            # Für "harder_high": wir wollen große Werte rank 1 => ascending=False
+            ascending = not harder_high
+            ranks_df[m] = (
+                values_df.groupby("Participant", dropna=False)[m]
+                .rank(method="average", ascending=ascending, na_option="keep")
+            )
+
+        # --- Schritt 3: Gewichtete Rank-Summe + finaler Task-Rank ---
+        # NaN-Ranks: wenn eine Metrik für einen Task fehlt, wird sie aus der Summe ausgeschlossen
+        # (d.h. wir summieren nur über vorhandene Ranks). Optional könnte man hier bestrafen;
+        # aktuell ist es "neutral" (keine Addition).
+        weighted_sum = pd.Series(0.0, index=ranks_df.index)
+        weight_sum = pd.Series(0.0, index=ranks_df.index)
+
+        for m in usable_metrics:
+            w = float(weights.get(m, 1.0))
+            r = ranks_df[m]
+            mask = r.notna()
+            weighted_sum = weighted_sum + (r.fillna(0.0) * w)
+            weight_sum = weight_sum + (mask.astype(float) * w)
+
+        # Wenn für eine Zeile gar keine Metrik vorhanden war -> NaN
+        final_score = weighted_sum.where(weight_sum > 0, other=pd.NA)
+
+        out = ranks_df[["Participant", "Task"]].copy()
+        out["rank_sum"] = final_score
+
+        # Finales Ranking: kleinste rank_sum = hardest (Rank 1)
+        out["final_rank"] = out.groupby("Participant", dropna=False)["rank_sum"].rank(
+            method="average", ascending=True, na_option="keep"
+        )
+
+        # Optional: auch die einzelnen Metrik-Ranks mitgeben
+        for m in usable_metrics:
+            out[f"{m}__rank"] = ranks_df[m]
+
+        # Sortierung für Anzeige/Export
+        out = out.sort_values(["Participant", "final_rank", "Task"], ascending=[True, True, True]).reset_index(drop=True)
+
+        state.participant_rank_df = out
+
+        note = ""
+        if missing_metrics:
+            note = "\nNicht gemappte/fehlende Metriken: " + ", ".join(missing_metrics)
+
+        QMessageBox.information(
+            self,
+            "Participant rank calculated",
+            "Fertig. Ergebnis in state.participant_rank_df gespeichert.\n"
+            f"Participants: {out['Participant'].nunique()} | Tasks: {out['Task'].nunique()} | Rows: {len(out)}\n"
+            f"Verwendete Metriken: {', '.join(usable_metrics)}"
+            f"{note}",
         )
 
     def _on_show_results(self) -> None:
