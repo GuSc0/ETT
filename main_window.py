@@ -60,7 +60,7 @@ class MainWindow(QMainWindow):
         self.group_participants_btn.clicked.connect(self._open_group_participants)
         topbar.addWidget(self.group_participants_btn)
         
-        self.group_tasks_btn = QPushButton("Group Tasks")
+        self.group_tasks_btn = QPushButton("Name Tasks")
         self.group_tasks_btn.setFixedWidth(120)
         self.group_tasks_btn.setEnabled(False)
         self.group_tasks_btn.clicked.connect(self._open_group_tasks)
