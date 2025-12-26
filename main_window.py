@@ -45,10 +45,23 @@ class MainWindow(QMainWindow):
 
         # Weighting parameters
         self.weighting_enabled_cb: Optional[QCheckBox] = None
-        self.weight_rows: list[tuple[QComboBox, QSlider]] = []
+        self.weight_rows: list[tuple[QComboBox, QSlider, QLabel]] = []
         self.parameter_weights: Dict[str, float] = {}
 
         self._setup_ui()
+
+    # --- Weighting slider mapping (QSlider is int-based) ---
+    def _weight_slider_to_float(self, slider_val: int) -> float:
+        # 0..12 -> 0.00..3.00 in 0.25 steps
+        return float(slider_val) / 4.0
+
+    def _weight_float_to_slider(self, weight: float) -> int:
+        # clamp + round to nearest 0.25 step
+        w = max(0.0, min(3.0, float(weight)))
+        return int(round(w * 4.0))
+
+    def _format_weight(self, weight: float) -> str:
+        return f"{weight:.2f}".rstrip("0").rstrip(".")
 
     def _setup_ui(self) -> None:
         central = QWidget()
@@ -437,7 +450,7 @@ class MainWindow(QMainWindow):
 
     def _selected_weight_params(self) -> set[str]:
         selected: set[str] = set()
-        for combo, _slider in self.weight_rows:
+        for combo, _slider, _lbl in self.weight_rows:
             val = combo.currentData()
             if isinstance(val, str) and val:
                 selected.add(val)
@@ -464,26 +477,37 @@ class MainWindow(QMainWindow):
             combo.addItem(p, p)
 
         slider = QSlider(Qt.Orientation.Horizontal)
+        # 0..3 in 0.25 steps => 0..12
         slider.setMinimum(0)
-        slider.setMaximum(3)
-        slider.setValue(1)
+        slider.setMaximum(12)
+        slider.setValue(self._weight_float_to_slider(1.0))
         slider.setSingleStep(1)
         slider.setPageStep(1)
         slider.setFixedWidth(220)
         slider.setEnabled(False)  # erst aktivieren, wenn Parameter gewählt
 
+        value_lbl = QLabel(self._format_weight(1.0))
+        value_lbl.setFixedWidth(44)
+        value_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        value_lbl.setEnabled(False)
+
         # Signals
-        combo.currentIndexChanged.connect(lambda _i, c=combo, s=slider: self._on_weight_row_changed(c, s))
-        slider.valueChanged.connect(lambda _v, c=combo, s=slider: self._on_weight_row_changed(c, s))
+        combo.currentIndexChanged.connect(
+            lambda _i, c=combo, s=slider, l=value_lbl: self._on_weight_row_changed(c, s, l)
+        )
+        slider.valueChanged.connect(
+            lambda _v, c=combo, s=slider, l=value_lbl: self._on_weight_row_changed(c, s, l)
+        )
 
         row_layout.addWidget(combo)
         row_layout.addWidget(slider)
+        row_layout.addWidget(value_lbl)
         row_layout.addStretch()
 
         self.weighting_rows_layout.addWidget(row)
-        self.weight_rows.append((combo, slider))
+        self.weight_rows.append((combo, slider, value_lbl))
 
-    def _on_weight_row_changed(self, combo: QComboBox, slider: QSlider) -> None:
+    def _on_weight_row_changed(self, combo: QComboBox, slider: QSlider, value_lbl: QLabel) -> None:
         # Wenn Toggle aus: ignorieren
         if self.weighting_enabled_cb is None or not self.weighting_enabled_cb.isChecked():
             return
@@ -491,12 +515,17 @@ class MainWindow(QMainWindow):
         param = combo.currentData()
         if not isinstance(param, str) or not param:
             slider.setEnabled(False)
+            value_lbl.setEnabled(False)
             return
 
         slider.setEnabled(True)
+        value_lbl.setEnabled(True)
 
-        # Gewicht speichern (int 0..3)
-        self.parameter_weights[param] = float(slider.value())
+        weight = self._weight_slider_to_float(slider.value())
+        value_lbl.setText(self._format_weight(weight))
+
+        # Gewicht speichern (0.00..3.00 in 0.25er Schritten)
+        self.parameter_weights[param] = float(weight)
 
         # Alle Combos neu aufbauen, damit keine Duplikate möglich sind
         self._rebuild_weight_combos(keep_current=True)
@@ -507,7 +536,7 @@ class MainWindow(QMainWindow):
     def _rebuild_weight_combos(self, keep_current: bool = True) -> None:
         selected = self._selected_weight_params()
 
-        for combo, slider in self.weight_rows:
+        for combo, slider, value_lbl in self.weight_rows:
             current = combo.currentData() if keep_current else None
 
             # Block signals während rebuild
@@ -531,9 +560,16 @@ class MainWindow(QMainWindow):
                 idx = combo.findData(current)
                 combo.setCurrentIndex(idx if idx >= 0 else 0)
                 slider.setEnabled(True)
+                value_lbl.setEnabled(True)
+
+                # Label/weight sync
+                weight = self._weight_slider_to_float(slider.value())
+                value_lbl.setText(self._format_weight(weight))
+                self.parameter_weights[current] = float(weight)
             else:
                 combo.setCurrentIndex(0)
                 slider.setEnabled(False)
+                value_lbl.setEnabled(False)
 
             combo.blockSignals(False)
 
@@ -549,7 +585,7 @@ class MainWindow(QMainWindow):
             self._create_weight_row()
             return
 
-        last_combo, _last_slider = self.weight_rows[-1]
+        last_combo, _last_slider, _last_lbl = self.weight_rows[-1]
         last_param = last_combo.currentData()
         if isinstance(last_param, str) and last_param:
             self._create_weight_row()
