@@ -479,6 +479,21 @@ class MainWindow(QMainWindow):
                 selected.add(val)
         return selected
 
+    def _current_ui_parameter_weights(self) -> Dict[str, float]:
+        """
+        Liefert die aktuell im Weighting-UI gewählten Gewichte als Dict[param] = weight.
+        Quelle ist ausschließlich die UI (Combos + Slider), nicht self.parameter_weights.
+        """
+        weights: Dict[str, float] = {}
+        if self.weighting_enabled_cb is None or not self.weighting_enabled_cb.isChecked():
+            return weights
+
+        for combo, slider, _lbl in self.weight_rows:
+            param = combo.currentData()
+            if isinstance(param, str) and param:
+                weights[param] = float(self._weight_slider_to_float(slider.value()))
+        return weights
+
     def _available_weight_params(self) -> list[str]:
         # PARAMETER_OPTIONS sind die “Parameter” im Tool
         selected = self._selected_weight_params()
@@ -593,6 +608,10 @@ class MainWindow(QMainWindow):
                 combo.setCurrentIndex(0)
                 slider.setEnabled(False)
                 value_lbl.setEnabled(False)
+
+                # Falls vorher ein Param gesetzt war, sicherstellen, dass er nicht als Weight hängen bleibt
+                if isinstance(current, str) and current:
+                    self.parameter_weights.pop(current, None)
 
             combo.blockSignals(False)
 
@@ -789,8 +808,8 @@ class MainWindow(QMainWindow):
         weights_enabled = bool(self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked())
         weights = {}
         if weights_enabled:
-            # nur stabile, relevante Gewichte (sortiert)
-            weights = {k: float(v) for k, v in sorted(self.parameter_weights.items())}
+            ui_weights = self._current_ui_parameter_weights()
+            weights = {k: float(v) for k, v in sorted(ui_weights.items())}
 
         return {
             "dataset_used": dataset_used,
@@ -856,12 +875,13 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No metrics", "Alle Metriken sind abgewählt (Deselect Parameters).")
             return
 
-        # --- Weights ---
+        # --- Weights (Single Source of Truth: UI) ---
         weights: Dict[str, float] = {m: 1.0 for m in metrics}
         if self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked():
+            ui_weights = self._current_ui_parameter_weights()
             for m in metrics:
-                if m in self.parameter_weights:
-                    weights[m] = float(self.parameter_weights[m])
+                if m in ui_weights:
+                    weights[m] = float(ui_weights[m])
 
         # --- Task-ID aus TOI ableiten (Suffix nach letztem '_') ---
         tmp = df.copy()
@@ -1129,7 +1149,8 @@ class MainWindow(QMainWindow):
             excluded_metrics = sorted(deselected) if deselected else []
             weights_list = []
             if self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked():
-                weights_list = [f"{k}={self._format_weight(v)}" for k, v in sorted(self.parameter_weights.items())]
+                ui_weights = self._current_ui_parameter_weights()
+                weights_list = [f"{k}={self._format_weight(v)}" for k, v in sorted(ui_weights.items())]
 
             # Helper: format a table
             def _table_from_scores(df_scores: pd.DataFrame) -> pd.DataFrame:
