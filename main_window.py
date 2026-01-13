@@ -9,7 +9,8 @@ import pandas as pd
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QLineEdit, QComboBox, QCheckBox, QGroupBox, QGridLayout,
-    QFrame, QMessageBox, QFileDialog, QMenu, QMenuBar, QSplitter
+    QFrame, QMessageBox, QFileDialog, QMenu, QMenuBar, QSplitter,
+    QDialog, QTextEdit
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction
@@ -18,6 +19,14 @@ from state import state
 from models import EXPECTED_COLUMNS, PARAMETER_OPTIONS
 from data_processor import validate_tsv_format, extract_participants, extract_tasks_from_toi
 from dialogs import GroupParticipantsDialog, GroupTasksDialog
+from analysis import aggregate_by_groups
+from results_window import ResultsWindow
+from executive_summary import (
+    generate_executive_summary,
+    format_statistics_table_for_summary,
+    export_summary_to_text,
+    export_summary_to_pdf
+)
 
 
 class MainWindow(QMainWindow):
@@ -401,23 +410,165 @@ class MainWindow(QMainWindow):
         domains = [name for name, cb in self.result_domain_vars.items() if cb.isChecked()]
         mode = self.mode_combo.currentText()
         
+        if not selected_groups:
+            QMessageBox.warning(self, "No Groups Selected", "Please select at least one group.")
+            return
+        
+        if not selected_tasks:
+            QMessageBox.warning(self, "No Tasks Selected", "Please select at least one task.")
+            return
+        
+        if not domains:
+            QMessageBox.warning(self, "No Domains Selected", "Please select at least one result domain.")
+            return
+        
         deselected = []
         if self.deselect_enabled_cb.isChecked():
             deselected = [name for name, action in self.deselect_param_checkboxes.items() if action.isChecked()]
         
-        msg = (
-            f"Mode: {mode}\n"
-            f"Groups selected: {len(selected_groups)}\n"
-            f"Tasks selected: {len(selected_tasks)}\n"
-            f"Result domains: {', '.join(domains) if domains else '(none)'}\n"
-            f"Deselected parameters: {', '.join(deselected) if deselected else '(none)'}"
-        )
-        QMessageBox.information(self, "Show Results (placeholder)", msg)
+        # Get active parameters (exclude deselected)
+        active_parameters = [p for p in PARAMETER_OPTIONS if p not in deselected]
+        
+        if not active_parameters:
+            QMessageBox.warning(self, "No Parameters", "All parameters are deselected. Please enable at least one parameter.")
+            return
+        
+        try:
+            # Aggregate data
+            aggregated_data = aggregate_by_groups(
+                state.df,
+                selected_groups,
+                selected_tasks,
+                deselected,
+                mode
+            )
+            
+            if not aggregated_data:
+                QMessageBox.warning(self, "No Data", "No data available for the selected groups and tasks.")
+                return
+            
+            # Create and show results window
+            results_window = ResultsWindow(
+                aggregated_data,
+                selected_groups,
+                selected_tasks,
+                active_parameters,
+                mode,
+                domains,
+                self
+            )
+            results_window.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Analysis Error", f"Failed to generate results: {str(e)}")
     
     def _on_print_exec_summary(self) -> None:
         """Handle Print Executive Summary button click."""
         if state.df is None:
             QMessageBox.information(self, "No data", "Load a TSV file first.")
             return
-        QMessageBox.information(self, "Executive Summary (placeholder)", 
-                                "This will generate the executive summary later.")
+        
+        selected_groups = [gid for gid, cb in self.result_group_checkboxes.items() if cb.isChecked()]
+        selected_tasks = [tid for tid, cb in self.result_task_checkboxes.items() if cb.isChecked()]
+        mode = self.mode_combo.currentText()
+        
+        if not selected_groups:
+            QMessageBox.warning(self, "No Groups Selected", "Please select at least one group.")
+            return
+        
+        if not selected_tasks:
+            QMessageBox.warning(self, "No Tasks Selected", "Please select at least one task.")
+            return
+        
+        deselected = []
+        if self.deselect_enabled_cb.isChecked():
+            deselected = [name for name, action in self.deselect_param_checkboxes.items() if action.isChecked()]
+        
+        active_parameters = [p for p in PARAMETER_OPTIONS if p not in deselected]
+        
+        if not active_parameters:
+            QMessageBox.warning(self, "No Parameters", "All parameters are deselected. Please enable at least one parameter.")
+            return
+        
+        try:
+            # Aggregate data
+            aggregated_data = aggregate_by_groups(
+                state.df,
+                selected_groups,
+                selected_tasks,
+                deselected,
+                mode
+            )
+            
+            if not aggregated_data:
+                QMessageBox.warning(self, "No Data", "No data available for the selected groups and tasks.")
+                return
+            
+            # Generate summary
+            summary_text = generate_executive_summary(
+                aggregated_data,
+                selected_groups,
+                selected_tasks,
+                active_parameters,
+                mode
+            )
+            
+            statistics_text = format_statistics_table_for_summary(
+                aggregated_data,
+                selected_tasks,
+                selected_groups,
+                mode
+            )
+            
+            # Ask user for export format
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Executive Summary")
+            dialog.setMinimumSize(800, 600)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # Text display
+            text_edit = QTextEdit()
+            text_edit.setReadOnly(True)
+            text_edit.setPlainText(summary_text + "\n\n" + "DETAILED STATISTICS\n" + "-" * 80 + "\n\n" + statistics_text)
+            layout.addWidget(text_edit)
+            
+            # Buttons
+            btn_layout = QHBoxLayout()
+            btn_layout.addStretch()
+            
+            export_txt_btn = QPushButton("Export to Text File")
+            export_txt_btn.clicked.connect(lambda: self._export_summary(export_summary_to_text, summary_text, statistics_text, ".txt"))
+            btn_layout.addWidget(export_txt_btn)
+            
+            export_pdf_btn = QPushButton("Export to PDF")
+            export_pdf_btn.clicked.connect(lambda: self._export_summary(export_summary_to_pdf, summary_text, statistics_text, ".pdf"))
+            btn_layout.addWidget(export_pdf_btn)
+            
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(dialog.accept)
+            btn_layout.addWidget(close_btn)
+            
+            layout.addLayout(btn_layout)
+            
+            dialog.exec()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Summary Error", f"Failed to generate executive summary: {str(e)}")
+    
+    def _export_summary(self, export_func, summary_text: str, statistics_text: str, extension: str) -> None:
+        """Helper method to export summary."""
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            f"Export Executive Summary",
+            f"executive_summary{extension}",
+            f"{extension.upper().lstrip('.')} files (*{extension});;All files (*.*)"
+        )
+        
+        if not filename:
+            return
+        
+        try:
+            export_func(summary_text, statistics_text, filename)
+            QMessageBox.information(self, "Export Success", f"Executive summary exported to {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
