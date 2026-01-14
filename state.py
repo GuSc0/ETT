@@ -45,6 +45,9 @@ class AppState:
         
         # Task labels
         self.task_labels: Dict[str, str] = {}  # task_id -> human label
+        
+        # Parameter weights (0.0 to 3.0, default 1.0)
+        self.parameter_weights: Dict[str, float] = {}  # parameter_name -> weight
     
     def format_task(self, task_id: str) -> str:
         """Format task ID with optional label."""

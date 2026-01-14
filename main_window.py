@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QLineEdit, QComboBox, QCheckBox, QGroupBox, QGridLayout,
     QFrame, QMessageBox, QFileDialog, QMenu, QMenuBar, QSplitter,
-    QDialog, QTextEdit
+    QDialog, QTextEdit, QSlider, QScrollArea, QProgressDialog, QApplication
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction
@@ -46,6 +46,10 @@ class MainWindow(QMainWindow):
         
         # Deselect parameters
         self.deselect_param_checkboxes: Dict[str, QCheckBox] = {}
+        
+        # Parameter weighting
+        self.parameter_weight_sliders: Dict[str, QSlider] = {}
+        self.parameter_weight_labels: Dict[str, QLabel] = {}
         
         self._setup_ui()
     
@@ -159,6 +163,12 @@ class MainWindow(QMainWindow):
             self.result_domain_vars[name] = cb
             domain_layout.addWidget(cb)
         
+        # Statistics tab toggle
+        stats_cb = QCheckBox("Statistics")
+        stats_cb.setChecked(True)
+        self.result_domain_vars["Statistics"] = stats_cb
+        domain_layout.addWidget(stats_cb)
+        
         domain_layout.addStretch()
         bottom_layout.addWidget(domain_group)
         
@@ -179,6 +189,54 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(deselect_group)
         
         main_layout.addLayout(bottom_layout)
+        
+        # Parameter Weighting section
+        weighting_group = QGroupBox("Parameter Weighting")
+        weighting_layout = QVBoxLayout(weighting_group)
+        
+        # Scrollable area for weight sliders
+        weight_scroll = QScrollArea()
+        weight_scroll.setWidgetResizable(True)
+        weight_scroll.setMaximumHeight(200)
+        weight_scroll_widget = QWidget()
+        weight_scroll_layout = QVBoxLayout(weight_scroll_widget)
+        
+        # Initialize default weights
+        for param in PARAMETER_OPTIONS:
+            if param not in state.parameter_weights:
+                state.parameter_weights[param] = 1.0  # Default 100%
+        
+        # Create slider for each parameter
+        for param in PARAMETER_OPTIONS:
+            param_layout = QHBoxLayout()
+            
+            param_label = QLabel(param)
+            param_label.setMinimumWidth(200)
+            param_layout.addWidget(param_label)
+            
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setMinimum(0)
+            slider.setMaximum(300)
+            slider.setValue(100)  # Default 100% (1.0)
+            slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+            slider.setTickInterval(50)
+            slider.valueChanged.connect(lambda value, p=param: self._update_weight_display(p, value))
+            self.parameter_weight_sliders[param] = slider
+            param_layout.addWidget(slider)
+            
+            weight_display = QLabel("1.00 (100%)")
+            weight_display.setMinimumWidth(100)
+            weight_display.setAlignment(Qt.AlignmentFlag.AlignRight)
+            self.parameter_weight_labels[param] = weight_display
+            param_layout.addWidget(weight_display)
+            
+            weight_scroll_layout.addLayout(param_layout)
+        
+        weight_scroll_layout.addStretch()
+        weight_scroll.setWidget(weight_scroll_widget)
+        weighting_layout.addWidget(weight_scroll)
+        
+        main_layout.addWidget(weighting_group)
         
         # Action buttons
         action_layout = QHBoxLayout()
@@ -378,6 +436,20 @@ class MainWindow(QMainWindow):
         count = sum(1 for action in self.deselect_param_checkboxes.values() if action.isChecked())
         self.deselect_btn.setText("None" if count == 0 else f"{count} deselected")
     
+    def _update_weight_display(self, parameter: str, slider_value: int) -> None:
+        """Update the weight display label when slider changes."""
+        weight = slider_value / 100.0  # Convert 0-300 to 0.0-3.0
+        state.parameter_weights[parameter] = weight
+        percentage = slider_value
+        self.parameter_weight_labels[parameter].setText(f"{weight:.2f} ({percentage}%)")
+    
+    def _update_weight_display(self, parameter: str, slider_value: int) -> None:
+        """Update the weight display label when slider changes."""
+        weight = slider_value / 100.0  # Convert 0-300 to 0.0-3.0
+        state.parameter_weights[parameter] = weight
+        percentage = slider_value
+        self.parameter_weight_labels[parameter].setText(f"{weight:.2f} ({percentage}%)")
+    
     def _open_group_participants(self) -> None:
         """Open the group participants dialog."""
         if not state.participants_cache:
@@ -433,6 +505,21 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Parameters", "All parameters are deselected. Please enable at least one parameter.")
             return
         
+        # Get parameter weights
+        parameter_weights = state.parameter_weights.copy()
+        
+        # Check if statistics tab should be shown
+        show_statistics = self.result_domain_vars.get("Statistics", QCheckBox()).isChecked()
+        
+        # Show loading indicator
+        progress = QProgressDialog("Processing data...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setRange(0, 0)  # Indeterminate progress
+        progress.show()
+        QApplication.processEvents()  # Update UI
+        
         try:
             # Aggregate data
             aggregated_data = aggregate_by_groups(
@@ -440,8 +527,11 @@ class MainWindow(QMainWindow):
                 selected_groups,
                 selected_tasks,
                 deselected,
-                mode
+                mode,
+                parameter_weights
             )
+            
+            progress.close()
             
             if not aggregated_data:
                 QMessageBox.warning(self, "No Data", "No data available for the selected groups and tasks.")
@@ -455,10 +545,12 @@ class MainWindow(QMainWindow):
                 active_parameters,
                 mode,
                 domains,
+                show_statistics,
                 self
             )
             results_window.show()
         except Exception as e:
+            progress.close()
             QMessageBox.critical(self, "Analysis Error", f"Failed to generate results: {str(e)}")
     
     def _on_print_exec_summary(self) -> None:
@@ -489,6 +581,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Parameters", "All parameters are deselected. Please enable at least one parameter.")
             return
         
+        # Get parameter weights
+        parameter_weights = state.parameter_weights.copy()
+        
         try:
             # Aggregate data
             aggregated_data = aggregate_by_groups(
@@ -496,7 +591,8 @@ class MainWindow(QMainWindow):
                 selected_groups,
                 selected_tasks,
                 deselected,
-                mode
+                mode,
+                parameter_weights
             )
             
             if not aggregated_data:
