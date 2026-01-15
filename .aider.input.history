@@ -1,0 +1,335 @@
+
+# 2025-12-25 15:31:38.889941
++odel
+
+# 2025-12-25 15:31:38.889941
++odel
+
+# 2025-12-25 15:32:49.541360
++odel
+
+# 2025-12-25 15:32:49.541360
++odel
+
+# 2025-12-25 15:34:22.318291
++odel
+
+# 2025-12-25 15:34:22.318291
++odel
+
+# 2025-12-25 15:35:38.092127
++odel
+
+# 2025-12-25 15:35:38.093075
++odel
+
+# 2025-12-25 15:37:43.838029
++/exi
+
+# 2025-12-25 15:42:41.624475
++y
+
+# 2025-12-25 15:43:19.610308
++/ex
+
+# 2025-12-25 15:44:23.833143
++/architect 
+
+# 2025-12-25 15:44:55.657549
++bitte behebe diese fehlermeldung:(cETT) D:\Documents\01_MCI\WS2025\Studentproject\Software\aider>python main.py
++Traceback (most recent call last):
++  File "D:\Documents\01_MCI\WS2025\Studentproject\Software\aider\main.py", line 14, in <module>
++    from PyQt6.QtWidgets import QApplication
++ImportError: DLL load failed while importing QtWidgets: Die angegebene Prozedur wurde nicht gefunden.
++                                                                aider --list-models openai/
++(cETT) D:\Documents\01_MCI\WS2025\Studentproject\Software\aider>
+
+# 2025-12-25 15:44:59.951644
++y
+
+# 2025-12-26 08:54:20.524094
++In the pop up window group tasks: i dont like the layout. when it first spawn the labels group name and participants are to far away from chatbox and drop/down menu. Please make the distance between them smaller and orient the from the top.
+
+# 2025-12-26 08:55:41.488721
++y
+
+# 2025-12-26 09:00:59.120051
++/add
+
+# 2025-12-26 09:01:37.649030
++/add __pycache__\dialogs.cpython-313.pyc
+
+# 2025-12-26 09:07:35.521904
++after pressing the button group tasks you get to the pop up window group tasks. Here the drop/down window in the box task labels work. but has problems displaying the tasks inside of the drop/down menu. Also, i want u to eliminate the functionalitie to group the tasks.
+
+# 2025-12-26 09:08:11.945444
++y
+
+# 2025-12-26 09:15:34.416975
++/role
+
+# 2025-12-26 09:15:43.130971
++/help
+
+# 2025-12-26 09:16:24.371780
++/code
+
+# 2025-12-26 09:17:34.694013
++/drop main.py
+
+# 2025-12-26 09:17:43.851298
++/drop state.py
+
+# 2025-12-26 09:23:38.876676
++1) Button-Text ändern
++
++Der Button in der Haupt-UI heißt aktuell "Group Tasks".
++
++Ändere die Beschriftung auf "Name Tasks".
++
++Funktionalität bleibt: Beim Klick öffnet sich weiterhin das vorhandene „Task Labels“-Fenster.
++
++2) Popup-Fenster kompakter machen (Layout)
++
++Das Fenster „Task Labels“ soll deutlich kleiner werden und ein klares, kompaktes Layout bekommen:
++
++Die Eingabeelemente (Dropdown „Task“, Label-Textbox, Preview) sollen oben im Fenster ausgerichtet sein (Top-Alignment), nicht mittig/verteilt.
++
++Die große leere Fläche soll verschwinden: Fensterhöhe reduzieren, sinnvolle feste geometry/minsize setzen.
++
++Die restliche Fläche unterhalb soll nicht unnötig Platz verbrauchen (falls ein großer Container/Frame/Text-Widget existiert: entfernen oder stark verkleinern).
++
++Verwende ein einfaches Grid/Pack-Layout mit wenigen Frames, ohne zusätzliche Komplexität.
++
++3) Dropdown reparieren (unsichtbare/alte Einträge)
++
++Das Dropdown für „Task“ hat aktuell offenbar „unsichtbare Elemente“ bzw. alte Einträge/Artefakte.
++
++Stelle sicher, dass die Combobox genau die aktuellen Task-Items enthält (keine Duplikate, keine leeren Strings, keine „ghost entries“).
++
++Beim Aktualisieren der Task-Liste sollen alte Werte sauber ersetzt werden (z. B. combobox["values"] = new_values und ggf. set() auf gültigen Wert).
++
++Falls die Werte aus einer Liste/Dict kommen: normalisieren (strip), leere entfernen, eindeutige Reihenfolge beibehalten.
++
++4) Enter-Verhalten ändern (Workflow)
++
++Aktuell: Enter in der Label-Textbox schließt offenbar das Popup.
++Gewünschtes Verhalten:
++
++Wenn in der Label-Textbox Enter gedrückt wird:
++
++Den aktuellen Label-Text auf den aktuell ausgewählten Task anwenden (wie bisher).
++
++Popup bleibt offen (nicht schließen).
++
++Im Dropdown wird automatisch der nächste Task ausgewählt (Index + 1).
++
++Wenn bereits der letzte Task ausgewählt ist: entweder beim letzten bleiben oder auf den ersten springen (bitte sinnvoll implementieren; bevorzugt: beim letzten bleiben).
++
++Die Label-Textbox wird geleert und der Cursor bleibt in der Textbox (so dass man direkt weiter tippen kann).
++
++Preview wird entsprechend aktualisiert.
++
++5) Robustheit / UX
++
++Wenn keine Tasks vorhanden sind: Dropdown disabled und Enter macht nichts.
++
++Wenn der Label-Text leer ist: Enter soll nichts anwenden, aber trotzdem zum nächsten Task springen (oder optional: nicht springen – entscheide sinnvoll und konsistent; bevorzugt: nicht anwenden und nicht springen).
++
++Keine Änderungen am restlichen UI-Layout außerhalb der notwendigen Button-Umbenennung.
++
++Am Ende: Bitte zeige nur die Diffs/Änderungen an diesen beiden Dateien.
+
+# 2025-12-26 09:25:06.938815
++y
+
+# 2025-12-26 09:27:46.466114
++1) Button-Text ändern
++
++Der Button in der Haupt-UI heißt aktuell "Group Tasks".
++
++Ändere die Beschriftung auf "Name Tasks".
++
++Funktionalität bleibt: Beim Klick öffnet sich weiterhin das vorhandene „Task Labels“-Fenster.
++
++2) Popup-Fenster kompakter machen (Layout)
++
++Das Fenster „Task Labels“ soll deutlich kleiner werden und ein klares, kompaktes Layout bekommen:
++
++Die Eingabeelemente (Dropdown „Task“, Label-Textbox, Preview) sollen oben im Fenster ausgerichtet sein (Top-Alignment), nicht mittig/verteilt.
++
++Die große leere Fläche soll verschwinden: Fensterhöhe reduzieren, sinnvolle feste geometry/minsize setzen.
++
++Die restliche Fläche unterhalb soll nicht unnötig Platz verbrauchen (falls ein großer Container/Frame/Text-Widget existiert: entfernen oder stark verkleinern).
++
++Verwende ein einfaches Grid/Pack-Layout mit wenigen Frames, ohne zusätzliche Komplexität.
++
++3) Dropdown reparieren (unsichtbare/alte Einträge)
++
++Das Dropdown für „Task“ hat aktuell offenbar „unsichtbare Elemente“ bzw. alte Einträge/Artefakte.
++
++Stelle sicher, dass die Combobox genau die aktuellen Task-Items enthält (keine Duplikate, keine leeren Strings, keine „ghost entries“).
++
++Beim Aktualisieren der Task-Liste sollen alte Werte sauber ersetzt werden (z. B. combobox["values"] = new_values und ggf. set() auf gültigen Wert).
++
++Falls die Werte aus einer Liste/Dict kommen: normalisieren (strip), leere entfernen, eindeutige Reihenfolge beibehalten.
++
++4) Enter-Verhalten ändern (Workflow)
++
++Aktuell: Enter in der Label-Textbox schließt offenbar das Popup.
++Gewünschtes Verhalten:
++
++Wenn in der Label-Textbox Enter gedrückt wird:
++
++Den aktuellen Label-Text auf den aktuell ausgewählten Task anwenden (wie bisher).
++
++Popup bleibt offen (nicht schließen).
++
++Im Dropdown wird automatisch der nächste Task ausgewählt (Index + 1).
++
++Wenn bereits der letzte Task ausgewählt ist: entweder beim letzten bleiben oder auf den ersten springen (bitte sinnvoll implementieren; bevorzugt: beim letzten bleiben).
++
++Die Label-Textbox wird geleert und der Cursor bleibt in der Textbox (so dass man direkt weiter tippen kann).
++
++Preview wird entsprechend aktualisiert.
++
++5) Robustheit / UX
++
++Wenn keine Tasks vorhanden sind: Dropdown disabled und Enter macht nichts.
++
++Wenn der Label-Text leer ist: Enter soll nichts anwenden, aber trotzdem zum nächsten Task springen (oder optional: nicht springen – entscheide sinnvoll und konsistent; bevorzugt: nicht anwenden und nicht springen).
++
++Keine Änderungen am restlichen UI-Layout außerhalb der notwendigen Button-Umbenennung.
++
++Am Ende: Bitte zeige nur die Diffs/Änderungen an diesen beiden Dateien.
+
+# 2025-12-26 10:15:44.779913
++/architect
+
+# 2025-12-26 10:33:49.050596
++Add a new button: Normalize. next to `show_results_btn` and `exec_summary_btn`. When pressed it should execute a new function that u will also create. This Function should normalize the data of each participant by his own baseline data which is the average of task 0a. If numerical values for task 0a is missing, use data from 0b instead. The normalized data should be stored in a df that is accesible by other functions
+
+# 2025-12-26 10:35:01.945201
++y
+
+# 2025-12-26 10:47:34.390284
++I want u to add another content box like deselect parameters called: Weighting Parameters. It should have a Toggle Switch with alabel: "Enable custom parameter weights" to the right. underneath is a drop/down menu where u can select one parameter. on the right next to it should be a slider which goes from 0 to 3 and is set by default at 1. if parameter is choosen and slider is adjusted spawn the same modules underneath so another parameter could be weighted. this should be possible as long as their is still a unweighted parameter in the list. selecting one parameter multiple times should not be possible.
+
+# 2025-12-26 10:52:20.225666
++/code
+
+# 2025-12-26 10:53:49.054354
++in the weighting parameter box: all the sliders should move in 0.25 steps. also please add labels so one can see the choosen parameteer weight
+
+# 2025-12-26 11:04:57.863242
++when `show_results_btn` is pressed include the values of `parameter_weights`
+
+# 2025-12-26 11:18:34.829447
++/architect
+
+# 2025-12-26 11:29:24.181705
++create a button next to `normalize_btn` called :"calculate metric averages". when it is pressed a function is called that takes the dataframe `normalized_df` and calculates the averages and standard deviation for each participant for each task and store it in a new dataframe 
+
+# 2025-12-26 11:37:35.605329
++/code
+
+# 2025-12-26 11:43:29.750809
++when `calc_metric_averages_btn` is pressed: calculate the task completion time(tct) and the standard deviation of the tct for each task for each participant and add it to the dataframe state.metric_averages_df 
+
+# 2025-12-26 11:44:58.646185
++/undo
+
+# 2025-12-26 11:47:31.337413
++In MainWindow._on_calculate_metric_averages() wird aktuell für alle
++   numerischen Spalten Mean/Std je Participant und Task berechnet.
++ • Ich will zusätzlich die Task Completion Time
++   (TCT) und Standardabweichung der TCT je Participant und Task berechnen
++   und in state.metric_averages_df ablegen, ohne  Mean/Std je Participant und Task zu überschreiben. 
+
+# 2025-12-26 11:51:39.163652
++/arc
+
+# 2025-12-26 11:52:53.527604
++/code
+
+# 2025-12-26 12:13:57.909556
++Create a new button next to exec_summary_btn called Calculate Participant Rank. On click, compute and store a pandas DataFrame participant_rank_df that ranks, for each participant, the selected tasks from hardest→easiest in cognitive load by (1) computing each metric per participant×task, (2) ranking that participant’s tasks separately per metric (rank 1 = hardest; ties = average rank), then (3) aggregating into a final score via weighted rank-sum across metrics and ranking tasks by lowest summed rank; exclude any metrics selected in “Deselect Parameters” and apply “Custom parameter weights” (default 1.0, user-defined 1.0–5.0 in 0.5 steps) in the rank-sum; tasks come from selected task toggles (or all if none), participants from selected group toggles (or all if none). Reference for direction (higher cognitive load): TCT↑, SD(TCT)↑, Pupil Diameter↑, Saccade Velocity↓, Peak Saccade Velocity↓, Saccade Amplitude↓.
+
+# 2025-12-26 12:16:28.063375
++y
+
+# 2025-12-26 12:25:32.460746
++Was wird geändert?
++
++ 1 Neuer State: In state.py wird participant_rank_df: Optional[pd.DataFrame]
++   ergänzt und in reset() initialisiert.
++ 2 Neuer Button + Handler: In main_window.py wird neben exec_summary_btn ein
++   Button Calculate Participant Rank hinzugefügt, der
++   _on_calculate_participant_rank() aufruft.
++ 3 Berechnung Participant-Rank:
++    • Datenbasis: bevorzugt state.normalized_df (falls vorhanden), sonst
++      state.df.
++    • Teilnehmer: aus ausgewählten Gruppen (oder alle, wenn keine Gruppe
++      ausgewählt).
++    • Tasks: aus ausgewählten Task-Toggles (oder alle, wenn keine Tasks
++      ausgewählt).
++    • Metriken: aus PARAMETER_OPTIONS, abzüglich der im Deselect Parameters
++      Menü ausgewählten.
++    • Pro Participant×Task wird je Metrik ein Wert berechnet (Mean über
++      Zeilen).
++    • Pro Participant wird je Metrik über Tasks gerankt (Rank 1 =
++      „härteste“; Ties = average).
++    • Aggregation: gewichtete Rank-Summe (Default 1.0; Custom Weights wenn
++      aktiviert).
++    • Final: Tasks pro Participant nach kleinster Rank-Summe sortiert
++      (hardest→easiest).
++ 4 Weights-UI Anpassung: Die Slider-Mapping-Logik wird auf 1.0–5.0 in 0.5er
++   Schritten umgestellt (int 2..10, Schritt 1). Default bleibt 1.0.
++
++Wichtige Annahme: Die Metrik-Namen in PARAMETER_OPTIONS werden auf Spalten
++gemappt. Ich habe dafür eine robuste Heuristik eingebaut (z.B. TCT →
++Duration, SD(TCT) → Duration std, Pupil Diameter → Average_pupil_diameter,
++etc.). Wenn eure TSV andere Spaltennamen nutzt, sag mir bitte die exakten
++Spaltennamen, dann passe ich das Mapping an.
+
+# 2025-12-26 12:27:33.167347
++When Show Results is pressed and Result domain → Rank is enabled, display the participant-rank results computed by Calculate Participant Rank using the current UI selections (Groups/Tasks/Mode/Deselect/Weights). If state.participant_rank_df is missing or stale, show a clear message to run Calculate Participant Rank first. The output should be shown in a new scrollable popup window titled “Rank Results” and must respect:
++
++Participants scope: selected Groups toggles; if none selected → all participants.
++
++Tasks scope: selected Task toggles; if none selected → all tasks.
++
++Mode dropdown:
++
++Only group mean: show one aggregated ranking per selected group (or “All participants” fallback) by averaging participant rank-sum scores per task, then sorting tasks hardest→easiest.
++
++Each participant for selected groups: show participant tables for participants inside selected groups (or all participants fallback).
++
++Group mean and individual participants: show group-mean section first, then individual participant sections.
++
++Deselected parameters + custom weights: already applied in the computed ranks; just report which parameters were excluded and which weights were used as a small header.
++
++The popup content format must be concise and readable:
++
++Header (single paragraph): dataset used (normalized or raw), #participants, #tasks, selected mode, excluded metrics list, custom weights list.
++
++Tables:
++
++For each participant (or each group mean), show a table with columns:
++Rank, Task, Score (rank-sum)
++sorted by Rank ascending.
++
++No plots for this domain; only tables.
++
++If a selected group has zero members or a selected task has no data for a participant, skip gracefully and note it in a small “Warnings” section at the bottom (e.g., “P3 had no rows for task 7”).
+
+# 2025-12-26 12:40:18.051430
++/architect
+
+# 2025-12-26 12:41:13.535223
++Fix the bug where applying Custom parameter weights does not change the participant rank score / ordering.
++
++Goal: Ensure the rank computation always uses the current weights from the Weighting Parameters UI at calculation time, and ensure Show Results (Rank) does not display stale results.
+
+# 2026-01-14 18:10:41.018043
++ create a new python file where implement a function that is activatetd when the button `exec_summary_btn` is pressed 
