@@ -1,0 +1,151 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=black,
+  citecolor=black
+}
+
+\newcommand{\sectionline}{\vspace{4pt}\hrule\vspace{8pt}}
+\newcommand{\smallnote}[1]{{\footnotesize\textcolor{gray}{#1}}}
+
+\begin{document}
+
+% ============================================================
+% Header
+% ============================================================
+\begin{center}
+{\LARGE \textbf{Eye Tracking Analysis – Executive Summary}}\\[6pt]
+\smallnote{ generated 2026-01-14 19:24 }
+\end{center}
+
+\sectionline
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item Test name: Visual Search Experiment
+  \item Date: 2026-01-10
+  \item Participants: 24
+  \item Tasks: 12
+\end{itemize}
+
+\begin{center}
+\textbf{“Which tasks impose the highest cognitive demand?”}
+\begin{itemize}
+    \item Task 7 (complex decision + time pressure)
+\end{itemize}
+\end{center}
+
+\sectionline
+
+% ============================================================
+\section{Key Findings}
+
+\subsection{Top 3 hardest tasks}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccccc}
+\toprule
+Rank & Task & Reason & Consistency & Outliers \\
+\midrule
+1 & Task 7 & Longest completion time & high agreement & none \\
+2 & Task 3 & High variability & mixed & experts differ \\
+3 & Task 10 & Large pupil dilation & high agreement & none \\
+\bottomrule
+\end{tabular}
+\caption{Top 3 hardest tasks}
+\end{table}
+
+Actionable implication: Tasks 7, 3 and 10 should be simplified or restructured.
+
+\subsection{Top 3 easiest tasks}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccccc}
+\toprule
+Rank & Task & Reason & Consistency & Outliers \\
+\midrule
+1 & Task 1 & Short time & high & none \\
+2 & Task 4 & Low variability & high & none \\
+3 & Task 6 & Low pupil response & high & none \\
+\bottomrule
+\end{tabular}
+\caption{Top 3 easiest tasks}
+\end{table}
+
+\smallnote{Reasons in plain language. Consistency reflects agreement across participants.}
+
+\sectionline
+
+% ============================================================
+\section{Overall Task Ranking}
+
+Overall ranking shows a clear separation between navigation-heavy and recognition-heavy tasks. Confidence is high for the top half.
+
+\sectionline
+
+% ============================================================
+\section{Explanation}
+
+Higher cognitive load typically manifests as longer task duration, higher inter-participant variability, increased pupil diameter, and altered saccade behavior.
+
+\smallnote{This is not a diagnosis. It is a relative difficulty indicator within tested tasks.}
+
+\sectionline
+
+% ============================================================
+\section{Evidence}
+
+\begin{center}
+\includegraphics[width=0.8\linewidth]{ boxplot_tasks.pdf }
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.8\linewidth]{ radar_tasks.pdf }
+\end{center}
+
+\sectionline
+
+% ============================================================
+\section{Consistency \& Variability}
+
+Approximately 75\% of participants ranked Task 7 among the top-3 hardest. Experts consistently showed lower load on Task 4.
+
+\sectionline
+
+% ============================================================
+\section{Notable Findings / Outliers}
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+\item Task 11 has low sample size
+\item One participant shows inverted ranking pattern
+\end{itemize}
+
+\sectionline
+
+% ============================================================
+\section{Run Configuration}
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item Data source: normalized_df
+  \item Detected groups: experts, novices
+  \item Detected tasks: 12 tasks detected
+  \item Ranking rule: Mean rank across normalized metrics
+\end{itemize}
+
+\end{document}

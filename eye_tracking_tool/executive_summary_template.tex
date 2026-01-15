@@ -1,0 +1,146 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=black,
+  citecolor=black
+}
+
+\newcommand{\sectionline}{\vspace{4pt}\hrule\vspace{8pt}}
+\newcommand{\smallnote}[1]{{\footnotesize\textcolor{gray}{#1}}}
+
+\begin{document}
+
+% ============================================================
+% Header
+% ============================================================
+\begin{center}
+{\LARGE \textbf{Eye Tracking Analysis – Executive Summary}}\\[6pt]
+\smallnote{ {{meta_info}} }
+\end{center}
+
+\sectionline
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item Test name: {{test_name}}
+  \item Date: {{test_date}}
+  \item Participants: {{num_participants}}
+  \item Tasks: {{num_tasks}}
+\end{itemize}
+
+\begin{center}
+\textbf{“Which tasks impose the highest cognitive demand?”}
+\begin{itemize}
+    \item {{highest_load_task}}
+\end{itemize}
+\end{center}
+
+\sectionline
+
+% ============================================================
+\section{Key Findings}
+
+\subsection{Top 3 hardest tasks}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccccc}
+\toprule
+Rank & Task & Reason & Consistency & Outliers \\
+\midrule
+{{top3_hardest_rows}}
+\bottomrule
+\end{tabular}
+\caption{Top 3 hardest tasks}
+\end{table}
+
+Actionable implication: {{hardest_implication}}
+
+\subsection{Top 3 easiest tasks}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccccc}
+\toprule
+Rank & Task & Reason & Consistency & Outliers \\
+\midrule
+{{top3_easiest_rows}}
+\bottomrule
+\end{tabular}
+\caption{Top 3 easiest tasks}
+\end{table}
+
+\smallnote{Reasons in plain language. Consistency reflects agreement across participants.}
+
+\sectionline
+
+% ============================================================
+\section{Overall Task Ranking}
+
+{{overall_ranking_text}}
+
+\sectionline
+
+% ============================================================
+\section{Explanation}
+
+{{interpretation_text}}
+
+\smallnote{This is not a diagnosis. It is a relative difficulty indicator within tested tasks.}
+
+\sectionline
+
+% ============================================================
+\section{Evidence}
+
+\begin{center}
+\includegraphics[width=0.8\linewidth]{ {{boxplot_path}} }
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.8\linewidth]{ {{radar_path}} }
+\end{center}
+
+\sectionline
+
+% ============================================================
+\section{Consistency \& Variability}
+
+{{consistency_text}}
+
+\sectionline
+
+% ============================================================
+\section{Notable Findings / Outliers}
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+{{notable_findings}}
+\end{itemize}
+
+\sectionline
+
+% ============================================================
+\section{Run Configuration}
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item Data source: {{data_source}}
+  \item Detected groups: {{groups}}
+  \item Detected tasks: {{tasks}}
+  \item Ranking rule: {{ranking_rule}}
+\end{itemize}
+
+\end{document}
