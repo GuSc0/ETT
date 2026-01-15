@@ -242,8 +242,19 @@ class ResultsWindow(QMainWindow):
         radar_widget = QWidget()
         radar_layout = QVBoxLayout(radar_widget)
         
+        # Filter parameters for radar chart: exclude TCT, keep Standard Deviation of TCT
+        radar_parameters = [
+            p for p in self.active_parameters 
+            if p != "Task Completion Time (TCT)"  # Exclude TCT from radar chart
+        ]
+        
+        if not radar_parameters:
+            radar_layout.addWidget(QLabel("No parameters available for radar chart (TCT excluded)."))
+            self.tabs.addTab(radar_widget, "Radar Chart")
+            return
+        
         # Normalize data for radar chart
-        normalized_data = normalize_for_radar(self.aggregated_data, self.active_parameters)
+        normalized_data = normalize_for_radar(self.aggregated_data, radar_parameters)
         
         if not normalized_data:
             radar_layout.addWidget(QLabel("No data available for radar chart."))
@@ -251,7 +262,7 @@ class ResultsWindow(QMainWindow):
             return
         
         # Set up angles for radar chart
-        num_params = len(self.active_parameters)
+        num_params = len(radar_parameters)
         if num_params == 0:
             radar_layout.addWidget(QLabel("No parameters available for radar chart."))
             self.tabs.addTab(radar_widget, "Radar Chart")
@@ -308,9 +319,12 @@ class ResultsWindow(QMainWindow):
                     task_label = state.format_task(task_id)
                     
                     values = []
-                    for param in self.active_parameters:
+                    for param in radar_parameters:
                         if param in task_data:
                             values.append(task_data[param])
+                        elif isinstance(task_data, dict) and "_group_stats" in task_data and param in task_data["_group_stats"]:
+                            # Handle Standard Deviation of TCT from _group_stats
+                            values.append(task_data["_group_stats"][param])
                         else:
                             values.append(0.0)
                     
@@ -320,7 +334,7 @@ class ResultsWindow(QMainWindow):
                     ax.fill(angles, values, alpha=0.25)
                 
                 ax.set_xticks(angles[:-1])
-                ax.set_xticklabels(self.active_parameters, fontsize=12)
+                ax.set_xticklabels(radar_parameters, fontsize=12)
                 ax.set_ylim(0, 1)
                 ax.set_title(group_name, fontsize=14, fontweight='bold', pad=30)
                 ax.grid(True)
@@ -394,9 +408,12 @@ class ResultsWindow(QMainWindow):
                 ax = ind_fig.add_subplot(111, projection='polar')
                 
                 values = []
-                for param in self.active_parameters:
+                for param in radar_parameters:
                     if param in task_data:
                         values.append(task_data[param])
+                    elif isinstance(task_data, dict) and "_group_stats" in task_data and param in task_data["_group_stats"]:
+                        # Handle Standard Deviation of TCT from _group_stats
+                        values.append(task_data["_group_stats"][param])
                     else:
                         values.append(0.0)
                 
@@ -405,7 +422,7 @@ class ResultsWindow(QMainWindow):
                 ax.plot(angles, values, 'o-', linewidth=3, color='steelblue', markersize=8)
                 ax.fill(angles, values, alpha=0.3, color='steelblue')
                 ax.set_xticks(angles[:-1])
-                ax.set_xticklabels(self.active_parameters, fontsize=14)
+                ax.set_xticklabels(radar_parameters, fontsize=14)
                 ax.set_ylim(0, 1)
                 ax.set_title(f"{task_label} - {group_name}", fontsize=16, fontweight='bold', pad=30)
                 ax.grid(True)

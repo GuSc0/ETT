@@ -619,11 +619,18 @@ def normalize_for_radar(
                     if parameter in task_data:
                         # Group mean mode: task_data is {parameter: {stats}}
                         all_values.append(task_data[parameter].get('mean', 0))
+                    elif "_group_stats" in task_data and parameter in task_data["_group_stats"]:
+                        # Standard Deviation of TCT or other group-level stats
+                        all_values.append(task_data["_group_stats"][parameter].get('mean', 0))
                     else:
                         # Individual participant mode: task_data is {participant: {parameter: {stats}}}
-                        for participant_data in task_data.values():
-                            if isinstance(participant_data, dict) and parameter in participant_data:
-                                all_values.append(participant_data[parameter].get('mean', 0))
+                        # Also check _group_stats for group-level parameters like Standard Deviation of TCT
+                        if "_group_stats" in task_data and parameter in task_data["_group_stats"]:
+                            all_values.append(task_data["_group_stats"][parameter].get('mean', 0))
+                        else:
+                            for participant_data in task_data.values():
+                                if isinstance(participant_data, dict) and parameter in participant_data:
+                                    all_values.append(participant_data[parameter].get('mean', 0))
         
         if all_values:
             param_min_max[parameter] = (min(all_values), max(all_values))
@@ -664,7 +671,18 @@ def normalize_for_radar(
                     
                     # Calculate group mean for each parameter
                     for parameter in parameters:
-                        if parameter in participant_values and participant_values[parameter]:
+                        # Check _group_stats first (for Standard Deviation of TCT)
+                        if "_group_stats" in task_data and parameter in task_data["_group_stats"]:
+                            value = task_data["_group_stats"][parameter].get('mean', 0)
+                            min_val, max_val = param_min_max[parameter]
+                            
+                            if max_val > min_val:
+                                normalized_value = (value - min_val) / (max_val - min_val)
+                            else:
+                                normalized_value = 0.5
+                            
+                            normalized[group_id][task_id][parameter] = normalized_value
+                        elif parameter in participant_values and participant_values[parameter]:
                             mean_value = float(np.mean(participant_values[parameter]))
                             min_val, max_val = param_min_max[parameter]
                             
@@ -685,6 +703,17 @@ def normalize_for_radar(
                                 normalized_value = (value - min_val) / (max_val - min_val)
                             else:
                                 normalized_value = 0.5  # All values are the same
+                            
+                            normalized[group_id][task_id][parameter] = normalized_value
+                        elif "_group_stats" in task_data and parameter in task_data["_group_stats"]:
+                            # Handle Standard Deviation of TCT in group mean mode
+                            value = task_data["_group_stats"][parameter].get('mean', 0)
+                            min_val, max_val = param_min_max[parameter]
+                            
+                            if max_val > min_val:
+                                normalized_value = (value - min_val) / (max_val - min_val)
+                            else:
+                                normalized_value = 0.5
                             
                             normalized[group_id][task_id][parameter] = normalized_value
     

@@ -1178,17 +1178,26 @@ class MainWindow(QMainWindow):
         # Check if statistics tab should be shown
         show_statistics = self.result_domain_vars.get("Statistics", QCheckBox()).isChecked()
         
-        # Show loading indicator
-        progress = QProgressDialog("Processing data...", None, 0, 0, self)
+        # Show loading indicator with actual progress
+        progress = QProgressDialog("Processing data...", None, 0, 100, self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setCancelButton(None)
         progress.setMinimumDuration(0)
-        progress.setRange(0, 0)  # Indeterminate progress
+        progress.setValue(0)
         progress.show()
         QApplication.processEvents()  # Update UI
         
         try:
-            # Aggregate data
+            # Step 1: Validate and prepare (10%)
+            progress.setValue(10)
+            progress.setLabelText("Validating data...")
+            QApplication.processEvents()
+            
+            # Step 2: Aggregate data (10-80%)
+            progress.setValue(20)
+            progress.setLabelText("Aggregating data...")
+            QApplication.processEvents()
+            
             aggregated_data = aggregate_by_groups(
                 state.df,
                 selected_groups,
@@ -1197,6 +1206,15 @@ class MainWindow(QMainWindow):
                 mode,
                 parameter_weights
             )
+            
+            # Step 3: Prepare results window (80-100%)
+            progress.setValue(80)
+            progress.setLabelText("Preparing results...")
+            QApplication.processEvents()
+            
+            progress.setValue(100)
+            progress.setLabelText("Complete!")
+            QApplication.processEvents()
             
             progress.close()
             
