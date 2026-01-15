@@ -10,6 +10,18 @@ import numpy as np
 from models import ValidationResult
 
 
+def _natural_sort_key(text: str) -> tuple:
+    """
+    Generate a sort key for natural/alphanumeric sorting.
+    Splits the string into text and number parts for proper numeric ordering.
+    Example: "10" < "2" becomes False, "1" < "2" < "10" becomes True
+    """
+    def convert(text_part: str) -> list:
+        return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text_part)]
+    
+    return convert(text)
+
+
 def validate_tsv_format(file_path: str, expected_columns: List[str]) -> ValidationResult:
     """
     Validate TSV format by checking:
@@ -56,20 +68,37 @@ def extract_participants(df: pd.DataFrame, column: str = "Participant") -> List[
     - Strips whitespace
     - Drops NaN/empty values
     - Casts to string
+    
+    Raises KeyError if column not found.
+    Raises ValueError if no valid participants found.
     """
+    if df is None or df.empty:
+        raise ValueError("DataFrame is None or empty.")
+    
     if column not in df.columns:
         raise KeyError(f"Spalte '{column}' nicht gefunden. Verfügbare Spalten: {list(df.columns)}")
 
     s = df[column].dropna().astype(str).str.strip()
     s = s[s != ""]
-    return sorted(s.unique().tolist())
+    participants = sorted(s.unique().tolist())
+    
+    if not participants:
+        raise ValueError(f"No valid participants found in column '{column}'.")
+    
+    return participants
 
 
 def extract_tasks_from_toi(df: pd.DataFrame, column: str = "TOI") -> List[str]:
     """
     Extracts unique task identifiers from the TOI column by taking the suffix after the last underscore.
     Filters out non-task entries: 'entire recording' and 'full' (case-insensitive).
+    
+    Raises KeyError if column not found.
+    Raises ValueError if no valid tasks found.
     """
+    if df is None or df.empty:
+        raise ValueError("DataFrame is None or empty.")
+    
     if column not in df.columns:
         raise KeyError(f"Column '{column}' not found. Available columns: {list(df.columns)}")
 

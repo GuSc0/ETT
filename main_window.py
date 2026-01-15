@@ -9,8 +9,8 @@ import pandas as pd
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QLineEdit, QComboBox, QCheckBox, QGroupBox, QGridLayout,
-    QFrame, QMessageBox, QFileDialog, QMenu, QMenuBar, QSplitter, QSlider,
-    QDialog, QTextEdit
+    QFrame, QMessageBox, QFileDialog, QMenu, QMenuBar, QSplitter,
+    QDialog, QTextEdit, QSlider, QScrollArea, QProgressDialog, QApplication
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction
@@ -24,6 +24,14 @@ from data_processor import (
     normalize_by_participant_baseline,
 )
 from dialogs import GroupParticipantsDialog, GroupTasksDialog
+from analysis import aggregate_by_groups
+from results_window import ResultsWindow
+from executive_summary import (
+    generate_executive_summary,
+    format_statistics_table_for_summary,
+    export_summary_to_text,
+    export_summary_to_pdf
+)
 
 
 class MainWindow(QMainWindow):
@@ -43,15 +51,11 @@ class MainWindow(QMainWindow):
 
         # Deselect parameters
         self.deselect_param_checkboxes: Dict[str, QCheckBox] = {}
-
-        # Weighting parameters
-        self.weighting_enabled_cb: Optional[QCheckBox] = None
-        self.weight_rows: list[tuple[QComboBox, QSlider, QLabel]] = []
-        self.parameter_weights: Dict[str, float] = {}
-
-        # Snapshot of the last rank computation inputs (to detect stale results)
-        self._participant_rank_signature: Optional[dict] = None
-
+        
+        # Parameter weighting
+        self.parameter_weight_sliders: Dict[str, QSlider] = {}
+        self.parameter_weight_labels: Dict[str, QLabel] = {}
+        
         self._setup_ui()
 
     # --- Weighting slider mapping (QSlider is int-based) ---
@@ -177,7 +181,13 @@ class MainWindow(QMainWindow):
             cb.setChecked(True)
             self.result_domain_vars[name] = cb
             domain_layout.addWidget(cb)
-
+        
+        # Statistics tab toggle
+        stats_cb = QCheckBox("Statistics")
+        stats_cb.setChecked(True)
+        self.result_domain_vars["Statistics"] = stats_cb
+        domain_layout.addWidget(stats_cb)
+        
         domain_layout.addStretch()
         bottom_layout.addWidget(domain_group)
 
@@ -222,7 +232,55 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(weighting_group)
 
         main_layout.addLayout(bottom_layout)
-
+        
+        # Parameter Weighting section
+        weighting_group = QGroupBox("Parameter Weighting")
+        weighting_layout = QVBoxLayout(weighting_group)
+        
+        # Scrollable area for weight sliders
+        weight_scroll = QScrollArea()
+        weight_scroll.setWidgetResizable(True)
+        weight_scroll.setMaximumHeight(200)
+        weight_scroll_widget = QWidget()
+        weight_scroll_layout = QVBoxLayout(weight_scroll_widget)
+        
+        # Initialize default weights
+        for param in PARAMETER_OPTIONS:
+            if param not in state.parameter_weights:
+                state.parameter_weights[param] = 1.0  # Default 100%
+        
+        # Create slider for each parameter
+        for param in PARAMETER_OPTIONS:
+            param_layout = QHBoxLayout()
+            
+            param_label = QLabel(param)
+            param_label.setMinimumWidth(200)
+            param_layout.addWidget(param_label)
+            
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setMinimum(0)
+            slider.setMaximum(300)
+            slider.setValue(100)  # Default 100% (1.0)
+            slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+            slider.setTickInterval(50)
+            slider.valueChanged.connect(lambda value, p=param: self._update_weight_display(p, value))
+            self.parameter_weight_sliders[param] = slider
+            param_layout.addWidget(slider)
+            
+            weight_display = QLabel("1.00 (100%)")
+            weight_display.setMinimumWidth(100)
+            weight_display.setAlignment(Qt.AlignmentFlag.AlignRight)
+            self.parameter_weight_labels[param] = weight_display
+            param_layout.addWidget(weight_display)
+            
+            weight_scroll_layout.addLayout(param_layout)
+        
+        weight_scroll_layout.addStretch()
+        weight_scroll.setWidget(weight_scroll_widget)
+        weighting_layout.addWidget(weight_scroll)
+        
+        main_layout.addWidget(weighting_group)
+        
         # Action buttons
         action_layout = QHBoxLayout()
 
@@ -644,7 +702,21 @@ class MainWindow(QMainWindow):
         """Update the deselect button label."""
         count = sum(1 for action in self.deselect_param_checkboxes.values() if action.isChecked())
         self.deselect_btn.setText("None" if count == 0 else f"{count} deselected")
-
+    
+    def _update_weight_display(self, parameter: str, slider_value: int) -> None:
+        """Update the weight display label when slider changes."""
+        weight = slider_value / 100.0  # Convert 0-300 to 0.0-3.0
+        state.parameter_weights[parameter] = weight
+        percentage = slider_value
+        self.parameter_weight_labels[parameter].setText(f"{weight:.2f} ({percentage}%)")
+    
+    def _update_weight_display(self, parameter: str, slider_value: int) -> None:
+        """Update the weight display label when slider changes."""
+        weight = slider_value / 100.0  # Convert 0-300 to 0.0-3.0
+        state.parameter_weights[parameter] = weight
+        percentage = slider_value
+        self.parameter_weight_labels[parameter].setText(f"{weight:.2f} ({percentage}%)")
+    
     def _open_group_participants(self) -> None:
         """Open the group participants dialog."""
         if not state.participants_cache:
@@ -1096,188 +1168,190 @@ class MainWindow(QMainWindow):
         selected_tasks = [tid for tid, cb in self.result_task_checkboxes.items() if cb.isChecked()]
         domains = [name for name, cb in self.result_domain_vars.items() if cb.isChecked()]
         mode = self.mode_combo.currentText()
-
+        
+        if not selected_groups:
+            QMessageBox.warning(self, "No Groups Selected", "Please select at least one group.")
+            return
+        
+        if not selected_tasks:
+            QMessageBox.warning(self, "No Tasks Selected", "Please select at least one task.")
+            return
+        
+        if not domains:
+            QMessageBox.warning(self, "No Domains Selected", "Please select at least one result domain.")
+            return
+        
         deselected = []
         if self.deselect_enabled_cb.isChecked():
             deselected = [name for name, action in self.deselect_param_checkboxes.items() if action.isChecked()]
-
-        # Parameter weights (nur anzeigen, wenn aktiviert)
-        weights_text = "(disabled)"
-        if self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked():
-            if not self.parameter_weights:
-                weights_text = "(none)"
-            else:
-                parts = [f"{k} = {self._format_weight(v)}" for k, v in sorted(self.parameter_weights.items())]
-                weights_text = ", ".join(parts)
-
-        # --- Rank domain: show computed participant rank results ---
-        if "Rank" in domains:
-            if state.participant_rank_df is None or state.participant_rank_df.empty:
-                QMessageBox.information(
-                    self,
-                    "Rank Results not available",
-                    "Keine Rank-Ergebnisse vorhanden.\nBitte zuerst 'Calculate Participant Rank' ausführen.",
-                )
-                return
-
-            current_sig = self._current_rank_signature()
-            if self._participant_rank_signature != current_sig:
-                QMessageBox.information(
-                    self,
-                    "Rank Results stale",
-                    "Die Rank-Ergebnisse passen nicht zu den aktuellen UI-Auswahlen (Groups/Tasks/Deselect/Weights oder Datenbasis).\n"
-                    "Bitte 'Calculate Participant Rank' erneut ausführen.",
-                )
-                return
-
-            rank_df = state.participant_rank_df.copy()
-
-            # Scope: Tasks
-            task_scope = selected_tasks if selected_tasks else state.tasks_cache.copy()
-            # Scope: Participants via groups
-            effective_groups = state.get_effective_participant_groups()
-            effective_names = state.get_effective_group_names()
-
-            group_ids = selected_groups if selected_groups else list(effective_groups.keys())
-            if not group_ids:
-                group_ids = ["ALL"]
-
-            warnings: list[str] = []
-            sections: list[tuple[str, pd.DataFrame]] = []
-
-            dataset_used = "normalized" if state.normalized_df is not None else "raw"
-            excluded_metrics = sorted(deselected) if deselected else []
-            weights_list = []
-            if self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked():
-                ui_weights = self._current_ui_parameter_weights()
-                weights_list = [f"{k}={self._format_weight(v)}" for k, v in sorted(ui_weights.items())]
-
-            # Helper: format a table
-            def _table_from_scores(df_scores: pd.DataFrame) -> pd.DataFrame:
-                # df_scores: columns Task, rank_sum
-                t = df_scores.copy()
-                t = t.sort_values(["rank_sum", "Task"], ascending=[True, True]).reset_index(drop=True)
-                t.insert(0, "Rank", range(1, len(t) + 1))
-                t = t.rename(columns={"rank_sum": "Score"})
-                t = t[["Rank", "Task", "Score"]]
-                return t
-
-            # Build participant list per group
-            group_to_participants: dict[str, list[str]] = {}
-            for gid in group_ids:
-                members = effective_groups.get(gid, [])
-                if not members:
-                    warnings.append(f"Gruppe '{effective_names.get(gid, gid)}' hat 0 Mitglieder (übersprungen).")
-                    continue
-                group_to_participants[gid] = members
-
-            # If no groups had members, fallback to all participants
-            if not group_to_participants:
-                all_p = state.participants_cache.copy()
-                if not all_p:
-                    QMessageBox.information(self, "No participants", "Keine Teilnehmer gefunden.")
-                    return
-                group_to_participants = {"ALL": all_p}
-
-            # Filter rank_df to task scope early
-            rank_df = rank_df[rank_df["Task"].isin(task_scope)]
-
-            # Determine which participants have which tasks (for warnings)
-            # We'll warn if a participant is missing any selected task in the rank_df.
-            for gid, members in group_to_participants.items():
-                for p in members:
-                    p_tasks = set(rank_df.loc[rank_df["Participant"] == p, "Task"].astype(str).tolist())
-                    for t in task_scope:
-                        if t not in p_tasks:
-                            warnings.append(f"{p} hatte keine Zeilen für Task {t}")
-
-            # Mode handling
-            def _add_group_mean_sections() -> None:
-                for gid, members in group_to_participants.items():
-                    gname = effective_names.get(gid, gid)
-                    sub = rank_df[rank_df["Participant"].isin(members)]
-                    if sub.empty:
-                        warnings.append(f"Gruppe '{gname}' hat nach Filterung keine Daten (übersprungen).")
-                        continue
-                    # mean rank_sum per task
-                    g_scores = (
-                        sub.groupby("Task", dropna=False)["rank_sum"]
-                        .mean()
-                        .reset_index()
-                    )
-                    g_table = _table_from_scores(g_scores)
-                    sections.append((f"Group mean: {gname}", g_table))
-
-            def _add_individual_sections() -> None:
-                # participants inside selected groups (or all fallback)
-                seen: set[str] = set()
-                for _gid, members in group_to_participants.items():
-                    for p in members:
-                        if p in seen:
-                            continue
-                        seen.add(p)
-                        sub = rank_df[rank_df["Participant"] == p][["Task", "rank_sum"]].copy()
-                        if sub.empty:
-                            warnings.append(f"{p} hat nach Filterung keine Daten (übersprungen).")
-                            continue
-                        p_table = _table_from_scores(sub)
-                        sections.append((f"Participant: {p}", p_table))
-
-            if mode == "Only group mean":
-                _add_group_mean_sections()
-            elif mode == "Each participant for selected groups":
-                _add_individual_sections()
-            elif mode == "Group mean and individual participants":
-                _add_group_mean_sections()
-                _add_individual_sections()
-            else:
-                warnings.append(f"Unbekannter Mode '{mode}' (zeige Individual-Rankings).")
-                _add_individual_sections()
-
-            # Header paragraph
-            # #participants/#tasks should reflect the popup scope (after group/task selection)
-            participants_in_scope: set[str] = set()
-            for members in group_to_participants.values():
-                participants_in_scope.update(members)
-            participants_in_scope = {p for p in participants_in_scope if p in set(rank_df["Participant"].unique())}
-
-            tasks_in_scope = sorted(set(task_scope) & set(rank_df["Task"].unique()))
-
-            header = (
-                f"Dataset: {dataset_used}; "
-                f"Participants: {len(participants_in_scope)}; "
-                f"Tasks: {len(tasks_in_scope)}; "
-                f"Mode: {mode}; "
-                f"Excluded metrics: {', '.join(excluded_metrics) if excluded_metrics else '(none)'}; "
-                f"Custom weights: {', '.join(weights_list) if weights_list else '(none)'}"
-            )
-
-            self._show_rank_results_popup(
-                title="Rank Results",
-                header=header,
-                sections=sections,
-                warnings=warnings,
-            )
+        
+        # Get active parameters (exclude deselected)
+        active_parameters = [p for p in PARAMETER_OPTIONS if p not in deselected]
+        
+        if not active_parameters:
+            QMessageBox.warning(self, "No Parameters", "All parameters are deselected. Please enable at least one parameter.")
             return
-
-        # Fallback: existing placeholder message
-        msg = (
-            f"Mode: {mode}\n"
-            f"Groups selected: {len(selected_groups)}\n"
-            f"Tasks selected: {len(selected_tasks)}\n"
-            f"Result domains: {', '.join(domains) if domains else '(none)'}\n"
-            f"Deselected parameters: {', '.join(deselected) if deselected else '(none)'}\n"
-            f"Parameter weights: {weights_text}"
-        )
-        QMessageBox.information(self, "Show Results (placeholder)", msg)
-
+        
+        # Get parameter weights
+        parameter_weights = state.parameter_weights.copy()
+        
+        # Check if statistics tab should be shown
+        show_statistics = self.result_domain_vars.get("Statistics", QCheckBox()).isChecked()
+        
+        # Show loading indicator
+        progress = QProgressDialog("Processing data...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setRange(0, 0)  # Indeterminate progress
+        progress.show()
+        QApplication.processEvents()  # Update UI
+        
+        try:
+            # Aggregate data
+            aggregated_data = aggregate_by_groups(
+                state.df,
+                selected_groups,
+                selected_tasks,
+                deselected,
+                mode,
+                parameter_weights
+            )
+            
+            progress.close()
+            
+            if not aggregated_data:
+                QMessageBox.warning(self, "No Data", "No data available for the selected groups and tasks.")
+                return
+            
+            # Create and show results window
+            results_window = ResultsWindow(
+                aggregated_data,
+                selected_groups,
+                selected_tasks,
+                active_parameters,
+                mode,
+                domains,
+                show_statistics,
+                self
+            )
+            results_window.show()
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "Analysis Error", f"Failed to generate results: {str(e)}")
+    
     def _on_print_exec_summary(self) -> None:
         """Handle Print Executive Summary button click."""
         if state.df is None:
             QMessageBox.information(self, "No data", "Load a TSV file first.")
             return
-        QMessageBox.information(
+        
+        selected_groups = [gid for gid, cb in self.result_group_checkboxes.items() if cb.isChecked()]
+        selected_tasks = [tid for tid, cb in self.result_task_checkboxes.items() if cb.isChecked()]
+        mode = self.mode_combo.currentText()
+        
+        if not selected_groups:
+            QMessageBox.warning(self, "No Groups Selected", "Please select at least one group.")
+            return
+        
+        if not selected_tasks:
+            QMessageBox.warning(self, "No Tasks Selected", "Please select at least one task.")
+            return
+        
+        deselected = []
+        if self.deselect_enabled_cb.isChecked():
+            deselected = [name for name, action in self.deselect_param_checkboxes.items() if action.isChecked()]
+        
+        active_parameters = [p for p in PARAMETER_OPTIONS if p not in deselected]
+        
+        if not active_parameters:
+            QMessageBox.warning(self, "No Parameters", "All parameters are deselected. Please enable at least one parameter.")
+            return
+        
+        # Get parameter weights
+        parameter_weights = state.parameter_weights.copy()
+        
+        try:
+            # Aggregate data
+            aggregated_data = aggregate_by_groups(
+                state.df,
+                selected_groups,
+                selected_tasks,
+                deselected,
+                mode,
+                parameter_weights
+            )
+            
+            if not aggregated_data:
+                QMessageBox.warning(self, "No Data", "No data available for the selected groups and tasks.")
+                return
+            
+            # Generate summary
+            summary_text = generate_executive_summary(
+                aggregated_data,
+                selected_groups,
+                selected_tasks,
+                active_parameters,
+                mode
+            )
+            
+            statistics_text = format_statistics_table_for_summary(
+                aggregated_data,
+                selected_tasks,
+                selected_groups,
+                mode
+            )
+            
+            # Ask user for export format
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Executive Summary")
+            dialog.setMinimumSize(800, 600)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # Text display
+            text_edit = QTextEdit()
+            text_edit.setReadOnly(True)
+            text_edit.setPlainText(summary_text + "\n\n" + "DETAILED STATISTICS\n" + "-" * 80 + "\n\n" + statistics_text)
+            layout.addWidget(text_edit)
+            
+            # Buttons
+            btn_layout = QHBoxLayout()
+            btn_layout.addStretch()
+            
+            export_txt_btn = QPushButton("Export to Text File")
+            export_txt_btn.clicked.connect(lambda: self._export_summary(export_summary_to_text, summary_text, statistics_text, ".txt"))
+            btn_layout.addWidget(export_txt_btn)
+            
+            export_pdf_btn = QPushButton("Export to PDF")
+            export_pdf_btn.clicked.connect(lambda: self._export_summary(export_summary_to_pdf, summary_text, statistics_text, ".pdf"))
+            btn_layout.addWidget(export_pdf_btn)
+            
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(dialog.accept)
+            btn_layout.addWidget(close_btn)
+            
+            layout.addLayout(btn_layout)
+            
+            dialog.exec()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Summary Error", f"Failed to generate executive summary: {str(e)}")
+    
+    def _export_summary(self, export_func, summary_text: str, statistics_text: str, extension: str) -> None:
+        """Helper method to export summary."""
+        filename, _ = QFileDialog.getSaveFileName(
             self,
-            "Executive Summary (placeholder)",
-            "This will generate the executive summary later.",
+            f"Export Executive Summary",
+            f"executive_summary{extension}",
+            f"{extension.upper().lstrip('.')} files (*{extension});;All files (*.*)"
         )
+        
+        if not filename:
+            return
+        
+        try:
+            export_func(summary_text, statistics_text, filename)
+            QMessageBox.information(self, "Export Success", f"Executive summary exported to {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")

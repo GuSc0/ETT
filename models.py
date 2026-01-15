@@ -27,6 +27,16 @@ PARAMETER_OPTIONS: List[str] = [
     "Saccade Amplitude",
 ]
 
+# Mapping from parameter names to data columns
+PARAMETER_COLUMN_MAP: dict[str, str] = {
+    "Task Completion Time (TCT)": "calculated",  # Special case - calculated from Start/Stop
+    "Standard Deviation of TCT": "calculated",  # Special case - calculated from TCT
+    "Pupil Diameter": "Average_pupil_diameter",
+    "Saccade Velocity": "Average_velocity",
+    "Peak Saccade Velocity": "Peak_velocity",
+    "Saccade Amplitude": "Saccade_amplitude",
+}
+
 
 @dataclass(frozen=True)
 class ValidationResult:
