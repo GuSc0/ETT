@@ -3,7 +3,7 @@ Main window for the Eye Tracking Tool using PyQt6.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 import pandas as pd
 
 from PyQt6.QtWidgets import (
@@ -32,6 +32,7 @@ from executive_summary import (
     export_summary_to_text,
     export_summary_to_pdf
 )
+from executive_summary_latex import generate_latex_summary, find_pdflatex
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +56,8 @@ class MainWindow(QMainWindow):
         # Parameter weighting
         self.parameter_weight_sliders: Dict[str, QSlider] = {}
         self.parameter_weight_labels: Dict[str, QLabel] = {}
+        self.weight_rows: List = []  # List of (combo, slider, label) tuples (old system - kept for compatibility)
+        self.weighting_enabled_cb = None  # Old system checkbox - no longer used
         
         self._setup_ui()
 
@@ -207,29 +210,8 @@ class MainWindow(QMainWindow):
         deselect_layout.addStretch()
         bottom_layout.addWidget(deselect_group)
 
-        # Weighting parameters
-        weighting_group = QGroupBox("Weighting Parameters")
-        weighting_outer = QVBoxLayout(weighting_group)
-
-        # Toggle row: checkbox + label rechts
-        weighting_toggle_row = QHBoxLayout()
-        self.weighting_enabled_cb = QCheckBox()
-        self.weighting_enabled_cb.setChecked(False)
-        self.weighting_enabled_cb.setEnabled(False)
-        self.weighting_enabled_cb.stateChanged.connect(self._on_weighting_toggled)
-        weighting_toggle_row.addWidget(self.weighting_enabled_cb)
-        weighting_toggle_row.addWidget(QLabel("Enable custom parameter weights"))
-        weighting_toggle_row.addStretch()
-        weighting_outer.addLayout(weighting_toggle_row)
-
-        # Container für dynamische Zeilen
-        self.weighting_rows_container = QWidget()
-        self.weighting_rows_layout = QVBoxLayout(self.weighting_rows_container)
-        self.weighting_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.weighting_rows_layout.setSpacing(6)
-        weighting_outer.addWidget(self.weighting_rows_container)
-
-        bottom_layout.addWidget(weighting_group)
+        # Weighting parameters - HIDDEN (using "Parameter Weighting" section below instead)
+        # Old system removed - keeping only the new "Parameter Weighting" with sliders
 
         main_layout.addLayout(bottom_layout)
         
@@ -322,8 +304,8 @@ class MainWindow(QMainWindow):
         # Initialize deselect menu
         self._build_deselect_menu()
 
-        # Initialize weighting UI (disabled by default)
-        self._reset_weighting_ui()
+        # Initialize weighting UI - removed (old system hidden)
+        # self._reset_weighting_ui()  # No longer needed - using "Parameter Weighting" sliders
 
         # Initial population
         self._refresh_group_task_toggles()
@@ -362,9 +344,13 @@ class MainWindow(QMainWindow):
             self.calc_metric_averages_btn.setEnabled(False)
 
         # Reset weighting UI/weights (parameters list may change later)
-        if self.weighting_enabled_cb is not None:
-            self.weighting_enabled_cb.setChecked(False)
-        self._reset_weighting_ui()
+        # Old system removed - weights are managed by "Parameter Weighting" sliders
+        # Reset weights to defaults
+        for param in PARAMETER_OPTIONS:
+            state.parameter_weights[param] = 1.0
+            if param in self.parameter_weight_sliders:
+                self.parameter_weight_sliders[param].setValue(100)  # Reset slider to 100%
+                self.parameter_weight_labels[param].setText("1.00 (100%)")
 
         # Update UI with file path
         state.loaded_file_path = file_path
@@ -412,8 +398,7 @@ class MainWindow(QMainWindow):
         self.group_participants_btn.setEnabled(bool(state.participants_cache))
         self.group_tasks_btn.setEnabled(bool(state.tasks_cache))
 
-        if self.weighting_enabled_cb is not None:
-            self.weighting_enabled_cb.setEnabled(True)
+        # Old weighting system removed - weights always enabled via "Parameter Weighting" sliders
 
         self._set_main_action_buttons_enabled(True)
         self._refresh_group_task_toggles()
@@ -508,7 +493,7 @@ class MainWindow(QMainWindow):
 
     def _reset_weighting_ui(self) -> None:
         """Clear all weighting rows and internal weights; keep toggle state."""
-        self.parameter_weights.clear()
+        state.parameter_weights.clear()
         self.weight_rows.clear()
 
         # Clear UI rows
@@ -621,7 +606,7 @@ class MainWindow(QMainWindow):
         value_lbl.setText(self._format_weight(weight))
 
         # Gewicht speichern (1.0..5.0 in 0.5er Schritten)
-        self.parameter_weights[param] = float(weight)
+        state.parameter_weights[param] = float(weight)
 
         # Alle Combos neu aufbauen, damit keine Duplikate möglich sind
         self._rebuild_weight_combos(keep_current=True)
@@ -661,7 +646,7 @@ class MainWindow(QMainWindow):
                 # Label/weight sync
                 weight = self._weight_slider_to_float(slider.value())
                 value_lbl.setText(self._format_weight(weight))
-                self.parameter_weights[current] = float(weight)
+                state.parameter_weights[current] = float(weight)
             else:
                 combo.setCurrentIndex(0)
                 slider.setEnabled(False)
@@ -669,7 +654,7 @@ class MainWindow(QMainWindow):
 
                 # Falls vorher ein Param gesetzt war, sicherstellen, dass er nicht als Weight hängen bleibt
                 if isinstance(current, str) and current:
-                    self.parameter_weights.pop(current, None)
+                    state.parameter_weights.pop(current, None)
 
             combo.blockSignals(False)
 
@@ -877,11 +862,8 @@ class MainWindow(QMainWindow):
         if self.deselect_enabled_cb.isChecked():
             excluded = sorted([name for name, action in self.deselect_param_checkboxes.items() if action.isChecked()])
 
-        weights_enabled = bool(self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked())
-        weights = {}
-        if weights_enabled:
-            ui_weights = self._current_ui_parameter_weights()
-            weights = {k: float(v) for k, v in sorted(ui_weights.items())}
+        # Use weights from "Parameter Weighting" sliders (always active)
+        weights = {k: float(v) for k, v in sorted(state.parameter_weights.items())}
 
         return {
             "dataset_used": dataset_used,
@@ -947,13 +929,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No metrics", "Alle Metriken sind abgewählt (Deselect Parameters).")
             return
 
-        # --- Weights (Single Source of Truth: UI) ---
-        weights: Dict[str, float] = {m: 1.0 for m in metrics}
-        if self.weighting_enabled_cb is not None and self.weighting_enabled_cb.isChecked():
-            ui_weights = self._current_ui_parameter_weights()
-            for m in metrics:
-                if m in ui_weights:
-                    weights[m] = float(ui_weights[m])
+        # --- Weights (from "Parameter Weighting" sliders) ---
+        weights: Dict[str, float] = {}
+        for m in metrics:
+            # Use weight from state (set by Parameter Weighting sliders), default to 1.0
+            weights[m] = float(state.parameter_weights.get(m, 1.0))
 
         # --- Task-ID aus TOI ableiten (Suffix nach letztem '_') ---
         tmp = df.copy()
@@ -1323,9 +1303,20 @@ class MainWindow(QMainWindow):
             export_txt_btn.clicked.connect(lambda: self._export_summary(export_summary_to_text, summary_text, statistics_text, ".txt"))
             btn_layout.addWidget(export_txt_btn)
             
-            export_pdf_btn = QPushButton("Export to PDF")
+            export_pdf_btn = QPushButton("Export to PDF (matplotlib)")
             export_pdf_btn.clicked.connect(lambda: self._export_summary(export_summary_to_pdf, summary_text, statistics_text, ".pdf"))
             btn_layout.addWidget(export_pdf_btn)
+            
+            # Add LaTeX PDF export button if MikTeX is available
+            if find_pdflatex():
+                export_latex_btn = QPushButton("Export to PDF (LaTeX/MikTeX)")
+                export_latex_btn.clicked.connect(
+                    lambda: self._export_latex_summary(
+                        aggregated_data, selected_groups, selected_tasks,
+                        active_parameters, mode, parameter_weights
+                    )
+                )
+                btn_layout.addWidget(export_latex_btn)
             
             close_btn = QPushButton("Close")
             close_btn.clicked.connect(dialog.accept)
@@ -1355,3 +1346,65 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Export Success", f"Executive summary exported to {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
+    
+    def _export_latex_summary(
+        self,
+        aggregated_data: Dict,
+        selected_groups: List[str],
+        selected_tasks: List[str],
+        active_parameters: List[str],
+        mode: str,
+        parameter_weights: Dict[str, float]
+    ) -> None:
+        """Export executive summary using LaTeX/MikTeX."""
+        # Show progress dialog
+        progress = QProgressDialog("Generating LaTeX PDF...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setCancelButton(None)
+        progress.show()
+        QApplication.processEvents()
+        
+        try:
+            # Get TSV file path if available
+            df_path = getattr(state, 'tsv_file_path', None)
+            
+            # Generate LaTeX PDF
+            pdf_path = generate_latex_summary(
+                aggregated_data,
+                selected_groups,
+                selected_tasks,
+                active_parameters,
+                mode,
+                parameter_weights,
+                df_path
+            )
+            
+            progress.close()
+            
+            # Ask user if they want to open the PDF
+            reply = QMessageBox.question(
+                self,
+                "PDF Generated Successfully",
+                f"LaTeX PDF generated at:\n{pdf_path}\n\nWould you like to open it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                import os
+                import platform
+                if platform.system() == 'Windows':
+                    os.startfile(pdf_path)
+                elif platform.system() == 'Darwin':  # macOS
+                    os.system(f'open "{pdf_path}"')
+                else:  # Linux
+                    os.system(f'xdg-open "{pdf_path}"')
+        
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(
+                self,
+                "LaTeX Export Error",
+                f"Failed to generate LaTeX PDF:\n{str(e)}\n\n"
+                "Please ensure MikTeX is installed and pdflatex is in your PATH.\n"
+                "Download from: https://miktex.org/download"
+            )

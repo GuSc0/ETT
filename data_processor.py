@@ -4,6 +4,7 @@ Data processing functions for TSV validation and extraction.
 from __future__ import annotations
 
 from typing import List
+import re
 import pandas as pd
 import numpy as np
 

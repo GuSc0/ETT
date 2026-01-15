@@ -265,9 +265,12 @@ class ResultsWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Enable mouse wheel scrolling
+        scroll.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
-        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setContentsMargins(10, 10, 10, 10)
+        scroll_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         
         # TOP SECTION: Aggregated view (one chart per group, all tasks overlaid)
         aggregated_label = QLabel("Aggregated View (All Tasks)")
@@ -282,8 +285,9 @@ class ResultsWindow(QMainWindow):
             agg_canvas = FigureCanvas(agg_fig)
             # Set minimum height and size policy for aggregated view
             agg_canvas.setMinimumHeight(500)
-            agg_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            agg_canvas.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
             agg_canvas.setMinimumWidth(800)
+            agg_canvas.setMaximumWidth(1400)  # Limit maximum width
             # Ensure canvas doesn't intercept wheel events - let scroll area handle them
             agg_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             
@@ -347,10 +351,12 @@ class ResultsWindow(QMainWindow):
             # Create horizontal layout for this task row (group charts side by side)
             task_row_layout = QHBoxLayout()
             task_row_layout.setContentsMargins(0, 0, 0, 0)
+            task_row_layout.setSpacing(10)
             task_row_widget = QWidget()
             task_row_widget.setLayout(task_row_layout)
             # Ensure the widget has proper size policy for scrolling
-            task_row_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            task_row_widget.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+            task_row_widget.setMinimumWidth(600)  # Minimum width for the row
             
             # Individual group charts for this task (side by side)
             for group_id in self.selected_groups:
@@ -365,12 +371,24 @@ class ResultsWindow(QMainWindow):
                 group_name = state.get_effective_group_names().get(group_id, group_id)
                 
                 # Create individual chart
-                ind_fig = Figure(figsize=(12, 10))
+                # Adjust figure size based on number of groups (fewer groups = smaller width)
+                num_groups_in_row = len([g for g in self.selected_groups if g in normalized_data and task_id in normalized_data[g]])
+                if num_groups_in_row == 1:
+                    # Single column: limit width to reasonable size
+                    fig_width = 8
+                    max_width = 800
+                else:
+                    # Multiple columns: use smaller width per chart
+                    fig_width = 10
+                    max_width = 1200
+                
+                ind_fig = Figure(figsize=(fig_width, 10))
                 ind_canvas = FigureCanvas(ind_fig)
-                # Set minimum height and size policy
+                # Set size constraints
                 ind_canvas.setMinimumHeight(500)
-                ind_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-                ind_canvas.setMinimumWidth(600)  # Reduced width since they're side by side
+                ind_canvas.setMinimumWidth(600)
+                ind_canvas.setMaximumWidth(max_width)  # Limit maximum width
+                ind_canvas.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
                 # Ensure canvas doesn't intercept wheel events - let scroll area handle them
                 ind_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
                 ax = ind_fig.add_subplot(111, projection='polar')
