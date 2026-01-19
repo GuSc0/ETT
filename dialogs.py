@@ -9,10 +9,11 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QComboBox,
     QFrame, QScrollArea, QGroupBox, QGridLayout, QAbstractItemView,
-    QMessageBox, QStyledItemDelegate
+    QMessageBox, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
+    QHeaderView
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QTextDocument
+from PyQt6.QtGui import QTextDocument, QColor
 
 from state import state
 
@@ -331,48 +332,119 @@ class GroupTasksDialog(QDialog):
         self.setMinimumSize(980, 640)
         self.setModal(True)
 
-        self.max_groups = 15
-
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
+
+        # Instructions
+        instructions = QLabel(
+            "Assign custom labels to tasks. Labels will appear alongside task IDs in results.\n"
+            "Select a task from the dropdown, enter a label, and press Enter to apply."
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet("padding: 8px; background-color: #f0f0f0; border-radius: 4px;")
+        main_layout.addWidget(instructions)
 
         # Task naming section
-        naming_group = QGroupBox("Task labels")
-        naming_layout = QHBoxLayout(naming_group)
+        naming_group = QGroupBox("Edit Task Label")
+        naming_layout = QVBoxLayout(naming_group)
+        naming_layout.setSpacing(8)
 
-        naming_layout.addWidget(QLabel("Task:"))
+        # First row: Task selection
+        task_row = QHBoxLayout()
+        task_row.addWidget(QLabel("Task:"))
         self.task_combo = QComboBox()
         self.task_combo.setItemDelegate(PlainTextDelegate(self.task_combo))
         self.task_combo.addItems([state.format_task(t) for t in state.tasks_cache])
         self.task_combo.currentIndexChanged.connect(self._on_task_changed)
-        naming_layout.addWidget(self.task_combo)
+        self.task_combo.setMinimumWidth(200)
+        task_row.addWidget(self.task_combo)
+        task_row.addStretch()
+        naming_layout.addLayout(task_row)
 
-        naming_layout.addWidget(QLabel("Label:"))
+        # Second row: Label input
+        label_row = QHBoxLayout()
+        label_row.addWidget(QLabel("Label:"))
         self.label_edit = QLineEdit()
+        self.label_edit.setPlaceholderText("Enter task label (e.g., 'Baseline', 'Setup Phase')...")
         self.label_edit.returnPressed.connect(self._apply_label)
         self.label_edit.textChanged.connect(self._update_preview)
-        naming_layout.addWidget(self.label_edit)
+        self.label_edit.setMinimumWidth(300)
+        label_row.addWidget(self.label_edit)
+        label_row.addStretch()
+        naming_layout.addLayout(label_row)
 
+        # Third row: Preview and instructions
+        preview_row = QHBoxLayout()
         self.preview_label = QLabel("Preview: ")
-        naming_layout.addWidget(self.preview_label)
-
-        naming_layout.addWidget(QLabel("Press Enter to apply."))
-        naming_layout.addStretch()
+        self.preview_label.setStyleSheet("font-weight: bold; color: #0066cc;")
+        preview_row.addWidget(self.preview_label)
+        preview_row.addWidget(QLabel("(Press Enter to apply)"))
+        preview_row.addStretch()
+        naming_layout.addLayout(preview_row)
 
         main_layout.addWidget(naming_group)
+
+        # All tasks table view
+        table_group = QGroupBox("All Tasks")
+        table_layout = QVBoxLayout(table_group)
+        
+        self.task_table = QTableWidget()
+        self.task_table.setColumnCount(2)
+        self.task_table.setHorizontalHeaderLabels(["Task ID", "Label"])
+        self.task_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.task_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.task_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.task_table.itemDoubleClicked.connect(self._on_table_item_double_clicked)
+        table_layout.addWidget(self.task_table)
+        
+        main_layout.addWidget(table_group)
+        
+        # Populate table
+        self._populate_table()
 
         # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
         close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(100)
         close_btn.clicked.connect(self.accept)
 
         btn_layout.addWidget(close_btn)
         main_layout.addLayout(btn_layout)
 
         self._on_task_changed()
+
+    def _populate_table(self) -> None:
+        """Populate the task table with all tasks and their labels."""
+        self.task_table.setRowCount(len(state.tasks_cache))
+        for row, task_id in enumerate(state.tasks_cache):
+            # Task ID column
+            task_item = QTableWidgetItem(task_id)
+            task_item.setFlags(task_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.task_table.setItem(row, 0, task_item)
+            
+            # Label column
+            label = state.task_labels.get(task_id, "")
+            label_item = QTableWidgetItem(label if label else "(no label)")
+            label_item.setFlags(label_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if not label:
+                label_item.setForeground(QColor("#999999"))  # Gray for empty labels
+            self.task_table.setItem(row, 1, label_item)
+        
+        self.task_table.resizeRowsToContents()
+
+    def _on_table_item_double_clicked(self, item: QTableWidgetItem) -> None:
+        """When a table row is double-clicked, select that task in the combo box."""
+        row = item.row()
+        if 0 <= row < len(state.tasks_cache):
+            task_id = state.tasks_cache[row]
+            # Find the index in combo box
+            for i in range(self.task_combo.count()):
+                if state.tasks_cache[i] == task_id:
+                    self.task_combo.setCurrentIndex(i)
+                    break
 
     def _on_task_changed(self) -> None:
         idx = self.task_combo.currentIndex()
@@ -409,4 +481,6 @@ class GroupTasksDialog(QDialog):
         self.task_combo.addItems([state.format_task(t) for t in state.tasks_cache])
         self.task_combo.setCurrentIndex(current_idx)
 
+        # Refresh table
+        self._populate_table()
         self._update_preview()

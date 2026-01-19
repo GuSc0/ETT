@@ -28,8 +28,11 @@ def _convert_numeric_column(series: pd.Series) -> pd.Series:
 def calculate_tct(df: pd.DataFrame, participant: str, task: str) -> Optional[float]:
     """
     Calculate Task Completion Time (TCT) for a participant-task combination.
-    TCT is the duration from first event Start to last event Stop.
+    Matches notebook approach: Sum of Bin_duration for the task.
+    The notebook groups by Task_Number and TOI, then sums Bin_duration and converts to seconds.
+    We sum all Bin_duration for this participant-task combination.
     
+    Returns duration in milliseconds (will be converted to seconds in display).
     Returns None if no data found.
     """
     task_data = df[(df['Participant'] == participant) & (df['TOI'].str.endswith(f'_{task}', na=False))]
@@ -37,23 +40,40 @@ def calculate_tct(df: pd.DataFrame, participant: str, task: str) -> Optional[flo
     if task_data.empty:
         return None
     
-    # Filter to valid events (non-empty Start/Stop)
-    valid_data = task_data[task_data['Start'].notna() & task_data['Stop'].notna()]
+    # Use Bin_duration approach (matches notebook: calculate_task_durations function)
+    if 'Bin_duration' not in task_data.columns:
+        # Fallback to Start/Stop if Bin_duration not available
+        valid_data = task_data[task_data['Start'].notna() & task_data['Stop'].notna()]
+        if valid_data.empty:
+            return None
+        starts = _convert_numeric_column(valid_data['Start'])
+        stops = _convert_numeric_column(valid_data['Stop'])
+        min_start = starts.min()
+        max_stop = stops.max()
+        if pd.isna(min_start) or pd.isna(max_stop):
+            return None
+        # Return in milliseconds (will be converted to seconds later in display)
+        # Note: Start/Stop might be in different units, but we'll treat as milliseconds for consistency
+        duration_ms = float(max_stop - min_start)
+        # If the difference seems too small (< 1), assume it's already in seconds and convert
+        if duration_ms < 1.0:
+            duration_ms = duration_ms * 1000.0
+        return duration_ms
     
-    if valid_data.empty:
+    # Convert Bin_duration to numeric (handle comma decimals)
+    bin_durations = _convert_numeric_column(task_data['Bin_duration'])
+    bin_durations = bin_durations.dropna()
+    
+    if bin_durations.empty:
         return None
     
-    # Convert to numeric (handle comma decimals)
-    starts = _convert_numeric_column(valid_data['Start'])
-    stops = _convert_numeric_column(valid_data['Stop'])
+    # Sum all Bin_duration values for this participant-task combination
+    # Bin_duration is in milliseconds (as per notebook comment)
+    # Group by TOI if needed (matching notebook: groupby(['Task_Number', 'TOI']))
+    # But since we're already filtered to one task, we can just sum all
+    total_duration_ms = float(bin_durations.sum())
     
-    min_start = starts.min()
-    max_stop = stops.max()
-    
-    if pd.isna(min_start) or pd.isna(max_stop):
-        return None
-    
-    return float(max_stop - min_start)
+    return total_duration_ms
 
 
 def calculate_parameter_metrics(
@@ -247,24 +267,44 @@ def _add_tct_std_to_result(
     """
     Calculate Standard Deviation of TCT for each group-task combination
     and add it to the result structure.
+    Only uses participants that are actually in the result structure (correctly filtered).
     """
-    effective_groups = state.get_effective_participant_groups()
-    
     for group_id in selected_groups:
         if group_id not in result:
-            continue
-        
-        participants = effective_groups.get(group_id, [])
-        if not participants:
             continue
         
         for task_id in selected_tasks:
             if task_id not in result[group_id]:
                 continue
             
-            # Collect TCT values from all participants for this task
+            task_data = result[group_id][task_id]
+            
+            # Get participants from the actual result structure, not from state
+            # This ensures we only use participants that were correctly filtered
+            participants_in_result = []
+            if isinstance(task_data, dict):
+                # Check if it's individual participant mode (has participant keys)
+                is_individual_mode = any(
+                    isinstance(k, str) and isinstance(v, dict) and 
+                    any(isinstance(vv, dict) for vv in v.values() if isinstance(vv, dict))
+                    for k, v in task_data.items() if k != "_group_stats"
+                )
+                
+                if is_individual_mode:
+                    # Individual participant mode: get participants from task_data keys
+                    participants_in_result = [p for p in task_data.keys() if p != "_group_stats"]
+                else:
+                    # Group mean mode: need to get participants from effective groups
+                    # but only those that would have been processed
+                    effective_groups = state.get_effective_participant_groups()
+                    participants_in_result = effective_groups.get(group_id, [])
+            
+            if not participants_in_result:
+                continue
+            
+            # Collect TCT values from participants that are actually in the result
             tct_values = []
-            for participant in participants:
+            for participant in participants_in_result:
                 tct = calculate_tct(df, participant, task_id)
                 if tct is not None:
                     tct_values.append(tct)
@@ -277,9 +317,6 @@ def _add_tct_std_to_result(
                 weight = (parameter_weights or {}).get("Standard Deviation of TCT", 1.0)
                 std_tct = std_tct * weight
                 mean_tct = mean_tct * weight
-                
-                # Add to result structure
-                task_data = result[group_id][task_id]
                 
                 # Check if this is individual participant mode (has participant keys that are strings)
                 is_individual_mode = isinstance(task_data, dict) and any(
@@ -548,6 +585,190 @@ def calculate_normalized_rankings_per_group(
     return group_rankings
 
 
+def calculate_normalized_rankings_per_participant(
+    aggregated_data: Dict[str, Dict],
+    selected_groups: List[str],
+    selected_tasks: List[str],
+    active_parameters: List[str],
+    parameter_weights: Dict[str, float]
+) -> Dict[str, Dict[str, pd.DataFrame]]:
+    """
+    Calculate normalized rankings per participant within each group.
+    
+    Returns a dictionary mapping group_id -> participant_id -> DataFrame with columns:
+    - Task_Number (task_id)
+    - Individual parameter ranks (Rank_Peak_Velocity, etc.)
+    - Overall_Rank
+    - Sum_of_Ranks
+    - indications
+    - contraindications
+    - neither
+    """
+    from collections import defaultdict
+    
+    participant_rankings = {}  # {group_id: {participant_id: DataFrame}}
+    
+    for group_id in selected_groups:
+        if group_id not in aggregated_data:
+            continue
+        
+        group_data = aggregated_data[group_id]
+        participant_rankings[group_id] = {}
+        
+        # Get all participants for this group from the data structure
+        all_participants = set()
+        for task_data in group_data.values():
+            if isinstance(task_data, dict):
+                for key in task_data.keys():
+                    if key != "_group_stats" and isinstance(task_data[key], dict):
+                        all_participants.add(key)
+        
+        # Calculate rankings for each participant
+        for participant_id in all_participants:
+            # Step 1: Collect and normalize values for each parameter for this participant
+            param_normalized_values = {}  # parameter -> {task_id: normalized_value}
+            
+            for parameter in active_parameters:
+                if parameter == "Standard Deviation of TCT":
+                    continue  # Skip - this is group-level
+                
+                task_values = {}  # task_id -> mean_value
+                
+                for task_id in selected_tasks:
+                    if task_id not in group_data:
+                        continue
+                    
+                    task_data = group_data[task_id]
+                    
+                    # Get value for this participant and parameter
+                    if isinstance(task_data, dict) and participant_id in task_data:
+                        participant_data = task_data[participant_id]
+                        if isinstance(participant_data, dict) and parameter in participant_data:
+                            task_values[task_id] = participant_data[parameter].get('mean', 0)
+                
+                # Normalize values for this parameter (min-max normalization)
+                if task_values:
+                    values_list = list(task_values.values())
+                    min_val = min(values_list)
+                    max_val = max(values_list)
+                    
+                    if max_val > min_val:
+                        normalized = {task_id: (val - min_val) / (max_val - min_val) 
+                                     for task_id, val in task_values.items()}
+                    else:
+                        normalized = {task_id: 0.5 for task_id in task_values.keys()}
+                    
+                    param_normalized_values[parameter] = normalized
+            
+            # Step 2: Rank tasks for each parameter
+            param_rankings = {}  # parameter -> DataFrame with Task_Number and Rank
+            
+            for parameter, normalized_values in param_normalized_values.items():
+                # Determine ranking direction
+                ascending = (parameter == "Saccade Amplitude")
+                
+                # Create DataFrame for ranking
+                rank_df = pd.DataFrame([
+                    {'Task_Number': task_id, 'Normalized_Value': norm_val}
+                    for task_id, norm_val in normalized_values.items()
+                ])
+                
+                # Sort and rank
+                rank_df = rank_df.sort_values(by='Normalized_Value', ascending=ascending).reset_index(drop=True)
+                
+                # Create rank column name
+                rank_col_name = f"Rank_{parameter.replace(' ', '_').replace('(', '').replace(')', '')}"
+                rank_df[rank_col_name] = rank_df['Normalized_Value'].rank(ascending=ascending, method='min').astype(int)
+                
+                # Keep only Task_Number and Rank
+                param_rankings[parameter] = rank_df[['Task_Number', rank_col_name]]
+            
+            # Step 3: Combine all rankings
+            if not param_rankings:
+                continue
+            
+            # Start with first parameter
+            param_items = list(param_rankings.items())
+            overall_ranking = param_items[0][1].copy()
+            
+            # Merge with remaining parameters
+            for parameter, rank_df in param_items[1:]:
+                overall_ranking = pd.merge(overall_ranking, rank_df, on='Task_Number', how='outer')
+            
+            # Step 4: Calculate weighted sum of ranks
+            rank_columns = [col for col in overall_ranking.columns if col.startswith('Rank_')]
+            
+            # Fill NaN with max rank + 1
+            if rank_columns:
+                max_rank = overall_ranking[rank_columns].max().max()
+                overall_ranking[rank_columns] = overall_ranking[rank_columns].fillna(max_rank + 1)
+            
+            # Calculate weighted sum
+            sum_of_ranks = pd.Series(0.0, index=overall_ranking.index)
+            
+            for col in rank_columns:
+                # Extract parameter name from column
+                col_clean = col.replace('Rank_', '').replace('_', '').lower()
+                # Map to actual parameter name
+                for param in active_parameters:
+                    param_clean = param.replace(' ', '').replace('(', '').replace(')', '').replace('_', '').lower()
+                    if param_clean == col_clean:
+                        weight = parameter_weights.get(param, 1.0)
+                        sum_of_ranks += overall_ranking[col] * weight
+                        break
+            
+            overall_ranking['Sum_of_Ranks'] = sum_of_ranks
+            
+            # Step 5: Calculate overall rank (lower sum = rank 1)
+            overall_ranking['Overall_Rank'] = overall_ranking['Sum_of_Ranks'].rank(ascending=True, method='min').astype(int)
+            
+            # Step 6: Calculate indications/contraindications
+            overall_ranking['indications'] = [[] for _ in range(len(overall_ranking))]
+            overall_ranking['contraindications'] = [[] for _ in range(len(overall_ranking))]
+            overall_ranking['neither'] = [[] for _ in range(len(overall_ranking))]
+            
+            metric_cols = {}
+            for param in active_parameters:
+                if param == "Standard Deviation of TCT":
+                    continue
+                col_name = f"Rank_{param.replace(' ', '_').replace('(', '').replace(')', '')}"
+                if col_name in overall_ranking.columns:
+                    metric_cols[param] = col_name
+            
+            for index, row in overall_ranking.iterrows():
+                overall_task_rank = row['Overall_Rank']
+                for metric_name, rank_col in metric_cols.items():
+                    if pd.isna(row[rank_col]):
+                        continue
+                    metric_rank = int(row[rank_col])
+                    rank_difference = abs(overall_task_rank - metric_rank)
+                    
+                    if rank_difference <= 2:
+                        overall_ranking.at[index, 'indications'].append(metric_name)
+                    elif rank_difference > 3:
+                        overall_ranking.at[index, 'contraindications'].append(metric_name)
+                    else:
+                        overall_ranking.at[index, 'neither'].append(metric_name)
+            
+            # Convert lists to strings
+            overall_ranking['indications'] = overall_ranking['indications'].apply(
+                lambda x: ', '.join(x) if x else 'None'
+            )
+            overall_ranking['contraindications'] = overall_ranking['contraindications'].apply(
+                lambda x: ', '.join(x) if x else 'None'
+            )
+            overall_ranking['neither'] = overall_ranking['neither'].apply(
+                lambda x: ', '.join(x) if x else 'None'
+            )
+            
+            # Sort by overall rank
+            overall_ranking = overall_ranking.sort_values(by='Overall_Rank').reset_index(drop=True)
+            
+            participant_rankings[group_id][participant_id] = overall_ranking
+    
+    return participant_rankings
+
+
 def calculate_rankings(
     aggregated_data: Dict[str, Dict],
     parameter: str
@@ -646,6 +867,10 @@ def normalize_for_radar(
         for task_id, task_data in group_data.items():
             normalized[group_id][task_id] = {}
             
+            # Initialize all parameters to 0.0 (will be overwritten if data exists)
+            for parameter in parameters:
+                normalized[group_id][task_id][parameter] = 0.0
+            
             # Handle both group mean mode and individual participant mode
             if isinstance(task_data, dict):
                 # Check if it's individual participant mode
@@ -671,50 +896,36 @@ def normalize_for_radar(
                     
                     # Calculate group mean for each parameter
                     for parameter in parameters:
+                        value = None
                         # Check _group_stats first (for Standard Deviation of TCT)
                         if "_group_stats" in task_data and parameter in task_data["_group_stats"]:
                             value = task_data["_group_stats"][parameter].get('mean', 0)
+                        elif parameter in participant_values and participant_values[parameter]:
+                            value = float(np.mean(participant_values[parameter]))
+                        
+                        if value is not None:
                             min_val, max_val = param_min_max[parameter]
-                            
                             if max_val > min_val:
                                 normalized_value = (value - min_val) / (max_val - min_val)
                             else:
-                                normalized_value = 0.5
-                            
-                            normalized[group_id][task_id][parameter] = normalized_value
-                        elif parameter in participant_values and participant_values[parameter]:
-                            mean_value = float(np.mean(participant_values[parameter]))
-                            min_val, max_val = param_min_max[parameter]
-                            
-                            if max_val > min_val:
-                                normalized_value = (mean_value - min_val) / (max_val - min_val)
-                            else:
-                                normalized_value = 0.5
-                            
+                                normalized_value = 0.5 if value > 0 else 0.0
                             normalized[group_id][task_id][parameter] = normalized_value
                 else:
                     # Group mean mode: task_data is {parameter: {stats}}
                     for parameter in parameters:
+                        value = None
                         if parameter in task_data:
                             value = task_data[parameter].get('mean', 0)
-                            min_val, max_val = param_min_max[parameter]
-                            
-                            if max_val > min_val:
-                                normalized_value = (value - min_val) / (max_val - min_val)
-                            else:
-                                normalized_value = 0.5  # All values are the same
-                            
-                            normalized[group_id][task_id][parameter] = normalized_value
                         elif "_group_stats" in task_data and parameter in task_data["_group_stats"]:
                             # Handle Standard Deviation of TCT in group mean mode
                             value = task_data["_group_stats"][parameter].get('mean', 0)
+                        
+                        if value is not None:
                             min_val, max_val = param_min_max[parameter]
-                            
                             if max_val > min_val:
                                 normalized_value = (value - min_val) / (max_val - min_val)
                             else:
-                                normalized_value = 0.5
-                            
+                                normalized_value = 0.5 if value > 0 else 0.0
                             normalized[group_id][task_id][parameter] = normalized_value
     
     return normalized

@@ -117,7 +117,9 @@ def extract_tasks_from_toi(df: pd.DataFrame, column: str = "TOI") -> List[str]:
     suffix = suffix.dropna().astype(str).str.strip()
     suffix = suffix[suffix != ""]
 
-    return sorted(suffix.unique().tolist())
+    # Use natural sort for chronological ordering (0a, 0b, 1, 2, ..., 10, 11, 12)
+    unique_tasks = suffix.unique().tolist()
+    return sorted(unique_tasks, key=_natural_sort_key)
 
 
 def normalize_by_participant_baseline(

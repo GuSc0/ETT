@@ -218,13 +218,26 @@ class MainWindow(QMainWindow):
         # Parameter Weighting section
         weighting_group = QGroupBox("Parameter Weighting")
         weighting_layout = QVBoxLayout(weighting_group)
+        weighting_layout.setSpacing(8)
+        
+        # Instructions
+        weight_instructions = QLabel(
+            "Adjust parameter weights (0-300%, default 100%). Higher weights increase the parameter's influence on rankings."
+        )
+        weight_instructions.setWordWrap(True)
+        weight_instructions.setStyleSheet("padding: 6px; color: #666; font-size: 10pt;")
+        weighting_layout.addWidget(weight_instructions)
         
         # Scrollable area for weight sliders
         weight_scroll = QScrollArea()
         weight_scroll.setWidgetResizable(True)
-        weight_scroll.setMaximumHeight(200)
+        weight_scroll.setMaximumHeight(250)
+        weight_scroll.setMinimumHeight(200)
+        weight_scroll.setFrameShape(QFrame.Shape.NoFrame)
         weight_scroll_widget = QWidget()
         weight_scroll_layout = QVBoxLayout(weight_scroll_widget)
+        weight_scroll_layout.setSpacing(6)
+        weight_scroll_layout.setContentsMargins(5, 5, 5, 5)
         
         # Initialize default weights
         for param in PARAMETER_OPTIONS:
@@ -234,9 +247,12 @@ class MainWindow(QMainWindow):
         # Create slider for each parameter
         for param in PARAMETER_OPTIONS:
             param_layout = QHBoxLayout()
+            param_layout.setSpacing(10)
             
             param_label = QLabel(param)
-            param_label.setMinimumWidth(200)
+            param_label.setMinimumWidth(220)
+            param_label.setMaximumWidth(220)
+            param_label.setWordWrap(True)
             param_layout.addWidget(param_label)
             
             slider = QSlider(Qt.Orientation.Horizontal)
@@ -245,16 +261,20 @@ class MainWindow(QMainWindow):
             slider.setValue(100)  # Default 100% (1.0)
             slider.setTickPosition(QSlider.TickPosition.TicksBelow)
             slider.setTickInterval(50)
+            slider.setMinimumWidth(300)
             slider.valueChanged.connect(lambda value, p=param: self._update_weight_display(p, value))
             self.parameter_weight_sliders[param] = slider
             param_layout.addWidget(slider)
             
             weight_display = QLabel("1.00 (100%)")
-            weight_display.setMinimumWidth(100)
-            weight_display.setAlignment(Qt.AlignmentFlag.AlignRight)
+            weight_display.setMinimumWidth(120)
+            weight_display.setMaximumWidth(120)
+            weight_display.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            weight_display.setStyleSheet("font-weight: bold; color: #0066cc;")
             self.parameter_weight_labels[param] = weight_display
             param_layout.addWidget(weight_display)
             
+            param_layout.addStretch()
             weight_scroll_layout.addLayout(param_layout)
         
         weight_scroll_layout.addStretch()
@@ -263,7 +283,7 @@ class MainWindow(QMainWindow):
         
         main_layout.addWidget(weighting_group)
         
-        # Action buttons
+        # Action buttons - only Show Results and Executive Summary
         action_layout = QHBoxLayout()
 
         self.show_results_btn = QPushButton("Show Results")
@@ -272,29 +292,14 @@ class MainWindow(QMainWindow):
         self.show_results_btn.clicked.connect(self._on_show_results)
         action_layout.addWidget(self.show_results_btn)
 
-        self.normalize_btn = QPushButton("Normalize")
-        self.normalize_btn.setFixedWidth(150)
-        self.normalize_btn.setEnabled(False)
-        self.normalize_btn.clicked.connect(self._on_normalize)
-        action_layout.addWidget(self.normalize_btn)
-
-        self.calc_metric_averages_btn = QPushButton("Calculate metric averages")
-        self.calc_metric_averages_btn.setFixedWidth(200)
-        self.calc_metric_averages_btn.setEnabled(False)
-        self.calc_metric_averages_btn.clicked.connect(self._on_calculate_metric_averages)
-        action_layout.addWidget(self.calc_metric_averages_btn)
+        # Removed buttons: Normalize, Calculate metric averages, Calculate Participant Rank
+        # Functionality kept in code but not exposed in UI
 
         self.exec_summary_btn = QPushButton("Print Executive Summary")
         self.exec_summary_btn.setFixedWidth(180)
         self.exec_summary_btn.setEnabled(False)
         self.exec_summary_btn.clicked.connect(self._on_print_exec_summary)
         action_layout.addWidget(self.exec_summary_btn)
-
-        self.calc_participant_rank_btn = QPushButton("Calculate Participant Rank")
-        self.calc_participant_rank_btn.setFixedWidth(220)
-        self.calc_participant_rank_btn.setEnabled(False)
-        self.calc_participant_rank_btn.clicked.connect(self._on_calculate_participant_rank)
-        action_layout.addWidget(self.calc_participant_rank_btn)
 
         action_layout.addStretch()
         main_layout.addLayout(action_layout)
@@ -340,8 +345,6 @@ class MainWindow(QMainWindow):
         state.metric_averages_df = None
         state.participant_rank_df = None
         self._participant_rank_signature = None
-        if hasattr(self, "calc_metric_averages_btn"):
-            self.calc_metric_averages_btn.setEnabled(False)
 
         # Reset weighting UI/weights (parameters list may change later)
         # Old system removed - weights are managed by "Parameter Weighting" sliders
@@ -419,10 +422,8 @@ class MainWindow(QMainWindow):
     def _set_main_action_buttons_enabled(self, enabled: bool) -> None:
         """Enable or disable main action buttons."""
         self.show_results_btn.setEnabled(enabled)
-        self.normalize_btn.setEnabled(enabled)
-        self.calc_metric_averages_btn.setEnabled(enabled)
         self.exec_summary_btn.setEnabled(enabled)
-        self.calc_participant_rank_btn.setEnabled(enabled)
+        # Removed buttons: normalize_btn, calc_metric_averages_btn, calc_participant_rank_btn
 
     def _refresh_group_task_toggles(self) -> None:
         """Refresh the checkbox lists in the Results section."""
@@ -471,7 +472,11 @@ class MainWindow(QMainWindow):
         col = 0
         for tid in state.tasks_cache:
             cb = QCheckBox(state.format_task(tid))
-            cb.setChecked(True)
+            # Tasks 0a and 0b should be unchecked by default
+            if tid in ("0a", "0b"):
+                cb.setChecked(False)
+            else:
+                cb.setChecked(True)
             self.result_task_checkboxes[tid] = cb
             self.tasks_layout.addWidget(cb, row, col)
             col += 1
@@ -745,9 +750,6 @@ class MainWindow(QMainWindow):
         self._participant_rank_signature = None
         state.participant_rank_df = None
 
-        if hasattr(self, "calc_metric_averages_btn"):
-            self.calc_metric_averages_btn.setEnabled(True)
-
         QMessageBox.information(
             self,
             "Normalization complete",
@@ -870,7 +872,7 @@ class MainWindow(QMainWindow):
             "selected_group_ids": sorted(selected_group_ids),
             "selected_task_ids": sorted(selected_task_ids),
             "excluded_metrics": excluded,
-            "weights_enabled": weights_enabled,
+            "weights_enabled": True,  # Weights are always enabled via Parameter Weighting sliders
             "weights": weights,
         }
 

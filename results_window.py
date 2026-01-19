@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle
 import matplotlib.patches as mpatches
@@ -23,7 +23,7 @@ from PyQt6.QtGui import QFont
 from state import state
 from analysis import (
     calculate_rankings, normalize_for_radar, generate_statistics_table,
-    calculate_normalized_rankings_per_group
+    calculate_normalized_rankings_per_group, calculate_normalized_rankings_per_participant
 )
 
 
@@ -136,101 +136,208 @@ class ResultsWindow(QMainWindow):
         # Get parameter weights from state
         parameter_weights = state.parameter_weights.copy()
         
-        # Calculate normalized rankings per group
-        group_rankings = calculate_normalized_rankings_per_group(
-            self.aggregated_data,
-            self.selected_groups,
-            self.selected_tasks,
-            self.active_parameters,
-            parameter_weights
-        )
+        # Check if we're in participant mode
+        is_participant_mode = self.mode in ["Each participant for selected groups", "Group mean and individual participants"]
         
-        if not group_rankings:
-            scroll_layout.addWidget(QLabel("No ranking data available."))
-            scroll.setWidget(scroll_widget)
-            rank_layout.addWidget(scroll)
-            self.tabs.addTab(rank_widget, "Rankings")
-            return
-        
-        # Create one table per group
-        for group_id in self.selected_groups:
-            if group_id not in group_rankings:
-                continue
+        if is_participant_mode:
+            # Calculate rankings per participant
+            participant_rankings = calculate_normalized_rankings_per_participant(
+                self.aggregated_data,
+                self.selected_groups,
+                self.selected_tasks,
+                self.active_parameters,
+                parameter_weights
+            )
             
-            group_name = state.get_effective_group_names().get(group_id, group_id)
-            ranking_df = group_rankings[group_id]
+            if not participant_rankings:
+                scroll_layout.addWidget(QLabel("No ranking data available."))
+                scroll.setWidget(scroll_widget)
+                rank_layout.addWidget(scroll)
+                self.tabs.addTab(rank_widget, "Rankings")
+                return
             
-            # Group label
-            group_label = QLabel(f"<b>{group_name}</b>")
-            group_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px 5px 5px 5px;")
-            scroll_layout.addWidget(group_label)
-            
-            # Create table
-            table = QTableWidget()
-            table.setRowCount(len(ranking_df))
-            
-            # Determine columns to display
-            # Always show: Overall_Rank, Sum_of_Ranks, Task_Number, indications, contraindications, neither
-            # Plus individual parameter ranks
-            base_columns = ['Overall_Rank', 'Sum_of_Ranks', 'Task_Number', 
-                          'indications', 'contraindications', 'neither']
-            rank_columns = [col for col in ranking_df.columns if col.startswith('Rank_')]
-            all_columns = base_columns + rank_columns
-            
-            table.setColumnCount(len(all_columns))
-            table.setHorizontalHeaderLabels(all_columns)
-            table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-            
-            # Enable word wrapping for text columns
-            text_columns = ['indications', 'contraindications', 'neither']
-            
-            for row_idx, (_, row) in enumerate(ranking_df.iterrows()):
-                for col_idx, col_name in enumerate(all_columns):
-                    value = row[col_name]
+            # Create one table per participant per group
+            for group_id in self.selected_groups:
+                if group_id not in participant_rankings:
+                    continue
+                
+                group_name = state.get_effective_group_names().get(group_id, group_id)
+                
+                # Group header
+                group_header = QLabel(f"<b>{group_name}</b>")
+                group_header.setStyleSheet("font-size: 16px; font-weight: bold; padding: 15px 5px 10px 5px; color: #0066cc;")
+                scroll_layout.addWidget(group_header)
+                
+                # Sort participants for consistent display
+                participants = sorted(participant_rankings[group_id].keys())
+                
+                for participant_id in participants:
+                    ranking_df = participant_rankings[group_id][participant_id]
                     
-                    if col_name == 'Task_Number':
-                        # Format task with label
-                        task_label = state.format_task(str(value))
-                        item_text = task_label
-                    elif isinstance(value, (int, float)):
-                        if col_name in ['Overall_Rank', 'Sum_of_Ranks'] or col_name.startswith('Rank_'):
-                            item_text = str(int(value))
-                        else:
-                            item_text = f"{value:.4f}"
-                    else:
-                        item_text = str(value)
+                    # Participant label
+                    participant_label = QLabel(f"<b>Participant: {participant_id}</b>")
+                    participant_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 10px 5px 5px 20px;")
+                    scroll_layout.addWidget(participant_label)
                     
-                    item = QTableWidgetItem(item_text)
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    # Create table
+                    table = QTableWidget()
+                    table.setRowCount(len(ranking_df))
+                    
+                    # Determine columns to display
+                    base_columns = ['Overall_Rank', 'Sum_of_Ranks', 'Task_Number', 
+                                  'indications', 'contraindications', 'neither']
+                    rank_columns = [col for col in ranking_df.columns if col.startswith('Rank_')]
+                    all_columns = base_columns + rank_columns
+                    
+                    table.setColumnCount(len(all_columns))
+                    table.setHorizontalHeaderLabels(all_columns)
+                    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
                     
                     # Enable word wrapping for text columns
-                    if col_name in text_columns:
-                        item.setTextAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-                        # Set word wrap
-                        table.setWordWrap(True)
+                    text_columns = ['indications', 'contraindications', 'neither']
                     
-                    table.setItem(row_idx, col_idx, item)
+                    for row_idx, (_, row) in enumerate(ranking_df.iterrows()):
+                        for col_idx, col_name in enumerate(all_columns):
+                            value = row[col_name]
+                            
+                            if col_name == 'Task_Number':
+                                # Format task with label
+                                task_label = state.format_task(str(value))
+                                item_text = task_label
+                            elif isinstance(value, (int, float)):
+                                if col_name in ['Overall_Rank', 'Sum_of_Ranks'] or col_name.startswith('Rank_'):
+                                    item_text = str(int(value))
+                                else:
+                                    item_text = f"{value:.4f}"
+                            else:
+                                item_text = str(value)
+                            
+                            item = QTableWidgetItem(item_text)
+                            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                            
+                            # Enable word wrapping for text columns
+                            if col_name in text_columns:
+                                item.setTextAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+                                table.setWordWrap(True)
+                            
+                            table.setItem(row_idx, col_idx, item)
+                    
+                    # Resize rows to fit content
+                    table.resizeRowsToContents()
+                    
+                    # Set minimum column widths for text columns
+                    for col_idx, col_name in enumerate(all_columns):
+                        if col_name in text_columns:
+                            table.setColumnWidth(col_idx, max(200, table.columnWidth(col_idx)))
+                    
+                    table.setSizeAdjustPolicy(QTableWidget.SizeAdjustPolicy.AdjustToContents)
+                    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                    table.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+                    scroll_layout.addWidget(table)
+                    
+                    # Add spacing between participants
+                    spacer = QLabel("")
+                    spacer.setMinimumHeight(10)
+                    scroll_layout.addWidget(spacer)
+                
+                # Add spacing between groups
+                group_spacer = QLabel("")
+                group_spacer.setMinimumHeight(20)
+                scroll_layout.addWidget(group_spacer)
+        else:
+            # Calculate normalized rankings per group (group mean mode)
+            group_rankings = calculate_normalized_rankings_per_group(
+                self.aggregated_data,
+                self.selected_groups,
+                self.selected_tasks,
+                self.active_parameters,
+                parameter_weights
+            )
             
-            # Resize rows to fit content for text columns
-            table.resizeRowsToContents()
+            if not group_rankings:
+                scroll_layout.addWidget(QLabel("No ranking data available."))
+                scroll.setWidget(scroll_widget)
+                rank_layout.addWidget(scroll)
+                self.tabs.addTab(rank_widget, "Rankings")
+                return
             
-            # Set minimum column widths for text columns to ensure readability
-            for col_idx, col_name in enumerate(all_columns):
-                if col_name in text_columns:
-                    table.setColumnWidth(col_idx, max(200, table.columnWidth(col_idx)))
-            
-            # Remove height constraint so table shows all rows - page will scroll instead
-            table.setSizeAdjustPolicy(QTableWidget.SizeAdjustPolicy.AdjustToContents)
-            # Disable vertical scrollbar on table - let the page scroll instead
-            table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            # Set size policy to ensure table expands vertically to show all rows
-            table.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-            scroll_layout.addWidget(table)
-            
-            # Add spacing between groups
-            spacer = QLabel("")
-            spacer.setMinimumHeight(10)
-            scroll_layout.addWidget(spacer)
+            # Create one table per group
+            for group_id in self.selected_groups:
+                if group_id not in group_rankings:
+                    continue
+                
+                group_name = state.get_effective_group_names().get(group_id, group_id)
+                ranking_df = group_rankings[group_id]
+                
+                # Group label
+                group_label = QLabel(f"<b>{group_name}</b>")
+                group_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px 5px 5px 5px;")
+                scroll_layout.addWidget(group_label)
+                
+                # Create table
+                table = QTableWidget()
+                table.setRowCount(len(ranking_df))
+                
+                # Determine columns to display
+                base_columns = ['Overall_Rank', 'Sum_of_Ranks', 'Task_Number', 
+                              'indications', 'contraindications', 'neither']
+                rank_columns = [col for col in ranking_df.columns if col.startswith('Rank_')]
+                all_columns = base_columns + rank_columns
+                
+                table.setColumnCount(len(all_columns))
+                table.setHorizontalHeaderLabels(all_columns)
+                table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+                
+                # Enable word wrapping for text columns
+                text_columns = ['indications', 'contraindications', 'neither']
+                
+                for row_idx, (_, row) in enumerate(ranking_df.iterrows()):
+                    for col_idx, col_name in enumerate(all_columns):
+                        value = row[col_name]
+                        
+                        if col_name == 'Task_Number':
+                            # Format task with label
+                            task_label = state.format_task(str(value))
+                            item_text = task_label
+                        elif isinstance(value, (int, float)):
+                            if col_name in ['Overall_Rank', 'Sum_of_Ranks'] or col_name.startswith('Rank_'):
+                                item_text = str(int(value))
+                            else:
+                                item_text = f"{value:.4f}"
+                        else:
+                            item_text = str(value)
+                        
+                        item = QTableWidgetItem(item_text)
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                        
+                        # Enable word wrapping for text columns
+                        if col_name in text_columns:
+                            item.setTextAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+                            # Set word wrap
+                            table.setWordWrap(True)
+                        
+                        table.setItem(row_idx, col_idx, item)
+                
+                # Resize rows to fit content for text columns
+                table.resizeRowsToContents()
+                
+                # Set minimum column widths for text columns to ensure readability
+                for col_idx, col_name in enumerate(all_columns):
+                    if col_name in text_columns:
+                        table.setColumnWidth(col_idx, max(200, table.columnWidth(col_idx)))
+                
+                # Remove height constraint so table shows all rows - page will scroll instead
+                table.setSizeAdjustPolicy(QTableWidget.SizeAdjustPolicy.AdjustToContents)
+                # Disable vertical scrollbar on table - let the page scroll instead
+                table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                # Set size policy to ensure table expands vertically to show all rows
+                table.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+                scroll_layout.addWidget(table)
+                
+                # Add spacing between groups
+                spacer = QLabel("")
+                spacer.setMinimumHeight(10)
+                scroll_layout.addWidget(spacer)
         
         scroll_layout.addStretch()
         scroll.setWidget(scroll_widget)
@@ -271,6 +378,10 @@ class ResultsWindow(QMainWindow):
         angles = np.linspace(0, 2 * np.pi, num_params, endpoint=False).tolist()
         angles += angles[:1]  # Complete the circle
         
+        # Sort tasks chronologically using natural sort
+        from data_processor import _natural_sort_key
+        sorted_tasks = sorted(self.selected_tasks, key=_natural_sort_key)
+        
         # Scroll area for the entire chart
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -310,28 +421,37 @@ class ResultsWindow(QMainWindow):
                 group_data = normalized_data[group_id]
                 group_name = state.get_effective_group_names().get(group_id, group_id)
                 
-                # Plot each task
-                for task_id in self.selected_tasks:
+                # Plot each task (in chronological order)
+                for task_id in sorted_tasks:
                     if task_id not in group_data:
                         continue
                     
                     task_data = group_data[task_id]
                     task_label = state.format_task(task_id)
                     
+                    # Extract values using consistent logic
                     values = []
                     for param in radar_parameters:
-                        if param in task_data:
-                            values.append(task_data[param])
-                        elif isinstance(task_data, dict) and "_group_stats" in task_data and param in task_data["_group_stats"]:
-                            # Handle Standard Deviation of TCT from _group_stats
-                            values.append(task_data["_group_stats"][param])
-                        else:
-                            values.append(0.0)
+                        value = None
+                        if isinstance(task_data, dict):
+                            if param in task_data:
+                                value = task_data[param]
+                            elif "_group_stats" in task_data and param in task_data["_group_stats"]:
+                                # Handle Standard Deviation of TCT from _group_stats
+                                value = task_data["_group_stats"][param]
+                        
+                        # Use 0.0 for missing values (will show as no data point)
+                        values.append(value if value is not None else 0.0)
                     
-                    values += values[:1]  # Complete the circle
-                    
-                    ax.plot(angles, values, 'o-', linewidth=2, label=task_label)
-                    ax.fill(angles, values, alpha=0.25)
+                    # Only plot if we have at least one non-zero value
+                    if any(v > 0.0 for v in values):
+                        values += values[:1]  # Complete the circle
+                        # Use color palette similar to notebook (viridis-like)
+                        color_map = plt.cm.viridis
+                        task_num = sorted_tasks.index(task_id) if task_id in sorted_tasks else 0
+                        color = color_map(task_num / max(len(sorted_tasks) - 1, 1))
+                        ax.plot(angles, values, 'o-', linewidth=2, label=task_label, color=color)
+                        ax.fill(angles, values, alpha=0.25, color=color)
                 
                 ax.set_xticks(angles[:-1])
                 ax.set_xticklabels(radar_parameters, fontsize=12)
@@ -348,96 +468,248 @@ class ResultsWindow(QMainWindow):
         separator.setStyleSheet("color: #ccc; padding: 10px;")
         scroll_layout.addWidget(separator)
         
-        # BOTTOM SECTION: Individual charts listed vertically (larger, scrollable)
-        grid_label = QLabel("Individual Task Analysis")
-        grid_label.setStyleSheet("font-weight: bold; font-size: 12px; padding: 5px;")
-        scroll_layout.addWidget(grid_label)
+        # Check if we're in participant mode
+        is_participant_mode = self.mode in ["Each participant for selected groups", "Group mean and individual participants"]
         
-        # Create individual charts for each task, listed vertically
-        for task_idx, task_id in enumerate(self.selected_tasks):
-            task_label = state.format_task(task_id)
+        if is_participant_mode:
+            # PARTICIPANT MODE: Show one radar chart per task per group, with each participant as a line
+            # Similar structure to group mean mode, but with participant lines instead of group mean line
+            participant_label = QLabel("Individual Participant Analysis")
+            participant_label.setStyleSheet("font-weight: bold; font-size: 12px; padding: 5px;")
+            scroll_layout.addWidget(participant_label)
             
-            # Task section header
-            task_header = QLabel(f"Task: {task_label}")
-            task_header.setStyleSheet("font-weight: bold; font-size: 11px; padding: 10px 5px 5px 5px;")
-            scroll_layout.addWidget(task_header)
-            
-            # Create horizontal layout for this task row (group charts side by side)
-            task_row_layout = QHBoxLayout()
-            task_row_layout.setContentsMargins(0, 0, 0, 0)
-            task_row_layout.setSpacing(10)
-            task_row_widget = QWidget()
-            task_row_widget.setLayout(task_row_layout)
-            # Ensure the widget has proper size policy for scrolling
-            task_row_widget.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
-            task_row_widget.setMinimumWidth(600)  # Minimum width for the row
-            
-            # Individual group charts for this task (side by side)
+            # Get all participants from aggregated data for each group
+            all_participants_by_group = {}
             for group_id in self.selected_groups:
-                if group_id not in normalized_data:
+                if group_id not in self.aggregated_data:
                     continue
+                group_data = self.aggregated_data[group_id]
+                participants = set()
+                for task_data in group_data.values():
+                    if isinstance(task_data, dict):
+                        for key in task_data.keys():
+                            if key != "_group_stats" and isinstance(task_data[key], dict):
+                                participants.add(key)
+                if participants:
+                    all_participants_by_group[group_id] = sorted(participants)
+            
+            # Create individual charts for each task, listed vertically (in chronological order)
+            for task_idx, task_id in enumerate(sorted_tasks):
+                task_label = state.format_task(task_id)
                 
-                group_data = normalized_data[group_id]
-                if task_id not in group_data:
-                    continue
+                # Task section header
+                task_header = QLabel(f"Task: {task_label}")
+                task_header.setStyleSheet("font-weight: bold; font-size: 11px; padding: 10px 5px 5px 5px;")
+                scroll_layout.addWidget(task_header)
                 
-                task_data = group_data[task_id]
-                group_name = state.get_effective_group_names().get(group_id, group_id)
+                # Create horizontal layout for this task row (group charts side by side)
+                task_row_layout = QHBoxLayout()
+                task_row_layout.setContentsMargins(0, 0, 0, 0)
+                task_row_layout.setSpacing(10)
+                task_row_widget = QWidget()
+                task_row_widget.setLayout(task_row_layout)
+                task_row_widget.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+                task_row_widget.setMinimumWidth(600)
                 
-                # Create individual chart
-                # Adjust figure size based on number of groups (fewer groups = smaller width)
-                num_groups_in_row = len([g for g in self.selected_groups if g in normalized_data and task_id in normalized_data[g]])
-                if num_groups_in_row == 1:
-                    # Single column: limit width to reasonable size
-                    fig_width = 8
-                    max_width = 800
-                else:
-                    # Multiple columns: use smaller width per chart
-                    fig_width = 10
-                    max_width = 1200
-                
-                ind_fig = Figure(figsize=(fig_width, 10))
-                ind_canvas = FigureCanvas(ind_fig)
-                # Set size constraints
-                ind_canvas.setMinimumHeight(500)
-                ind_canvas.setMinimumWidth(600)
-                ind_canvas.setMaximumWidth(max_width)  # Limit maximum width
-                ind_canvas.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-                # Ensure canvas doesn't intercept wheel events - let scroll area handle them
-                ind_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-                ax = ind_fig.add_subplot(111, projection='polar')
-                
-                values = []
-                for param in radar_parameters:
-                    if param in task_data:
-                        values.append(task_data[param])
-                    elif isinstance(task_data, dict) and "_group_stats" in task_data and param in task_data["_group_stats"]:
-                        # Handle Standard Deviation of TCT from _group_stats
-                        values.append(task_data["_group_stats"][param])
+                # Individual group charts for this task (side by side)
+                for group_id in self.selected_groups:
+                    if group_id not in self.aggregated_data or task_id not in self.aggregated_data[group_id]:
+                        continue
+                    
+                    task_data = self.aggregated_data[group_id][task_id]
+                    if not isinstance(task_data, dict):
+                        continue
+                    
+                    group_name = state.get_effective_group_names().get(group_id, group_id)
+                    
+                    # Get participants for this group
+                    participants = all_participants_by_group.get(group_id, [])
+                    if not participants:
+                        continue
+                    
+                    # Create individual chart for this group-task
+                    num_groups_in_row = len([g for g in self.selected_groups if g in self.aggregated_data and task_id in self.aggregated_data[g]])
+                    if num_groups_in_row == 1:
+                        fig_width = 8
+                        max_width = 800
                     else:
-                        values.append(0.0)
+                        fig_width = 10
+                        max_width = 1200
+                    
+                    ind_fig = Figure(figsize=(fig_width, 10))
+                    ind_canvas = FigureCanvas(ind_fig)
+                    ind_canvas.setMinimumHeight(500)
+                    ind_canvas.setMinimumWidth(600)
+                    ind_canvas.setMaximumWidth(max_width)
+                    ind_canvas.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+                    ind_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                    ax = ind_fig.add_subplot(111, projection='polar')
+                    
+                    # Collect all participant values for this group-task to normalize together
+                    all_participant_values_for_task = {}
+                    for p_id in participants:
+                        if p_id in task_data and isinstance(task_data[p_id], dict):
+                            for param in radar_parameters:
+                                if param in task_data[p_id]:
+                                    if param not in all_participant_values_for_task:
+                                        all_participant_values_for_task[param] = []
+                                    all_participant_values_for_task[param].append(task_data[p_id][param].get('mean', 0))
+                    
+                    # Plot each participant as a separate line
+                    color_map = plt.cm.get_cmap('tab20', len(participants))
+                    for part_idx, participant_id in enumerate(participants):
+                        if participant_id not in task_data or not isinstance(task_data[participant_id], dict):
+                            continue
+                        
+                        participant_data = task_data[participant_id]
+                        
+                        # Extract and normalize values for this participant
+                        values = []
+                        for param in radar_parameters:
+                            value = None
+                            if param in participant_data:
+                                value = participant_data[param].get('mean', 0)
+                            
+                            if value is not None and param in all_participant_values_for_task:
+                                # Normalize using min/max across all participants for this task
+                                param_values = all_participant_values_for_task[param]
+                                if param_values:
+                                    min_val = min(param_values)
+                                    max_val = max(param_values)
+                                    if max_val > min_val:
+                                        normalized_value = (value - min_val) / (max_val - min_val)
+                                    else:
+                                        normalized_value = 0.5 if value > 0 else 0.0
+                                    values.append(normalized_value)
+                                else:
+                                    values.append(0.0)
+                            else:
+                                values.append(0.0)
+                        
+                        # Only plot if we have at least one non-zero value
+                        if any(v > 0.0 for v in values):
+                            values += values[:1]  # Complete the circle
+                            color = color_map(part_idx)
+                            ax.plot(angles, values, 'o-', linewidth=2, label=participant_id, color=color)
+                            ax.fill(angles, values, alpha=0.25, color=color)
+                    
+                    ax.set_xticks(angles[:-1])
+                    ax.set_xticklabels(radar_parameters, fontsize=14)
+                    ax.set_ylim(0, 1)
+                    ax.set_title(f"{task_label} - {group_name}", fontsize=16, fontweight='bold', pad=30)
+                    ax.grid(True)
+                    ax.legend(loc='upper right', bbox_to_anchor=(1.4, 1.2), fontsize=10)
+                    
+                    ind_fig.tight_layout()
+                    task_row_layout.addWidget(ind_canvas)
                 
-                values += values[:1]
+                # Add the task row to the scroll layout
+                scroll_layout.addWidget(task_row_widget)
                 
-                ax.plot(angles, values, 'o-', linewidth=3, color='steelblue', markersize=8)
-                ax.fill(angles, values, alpha=0.3, color='steelblue')
-                ax.set_xticks(angles[:-1])
-                ax.set_xticklabels(radar_parameters, fontsize=14)
-                ax.set_ylim(0, 1)
-                ax.set_title(f"{task_label} - {group_name}", fontsize=16, fontweight='bold', pad=30)
-                ax.grid(True)
-                
-                ind_fig.tight_layout()
-                task_row_layout.addWidget(ind_canvas)
+                # Store reference to last canvas for export
+                if task_idx == len(sorted_tasks) - 1:
+                    if 'ind_canvas' in locals():
+                        self.radar_canvas = ind_canvas
+        else:
+            # GROUP MEAN MODE: Show individual charts for each task
+            # BOTTOM SECTION: Individual charts listed vertically (larger, scrollable)
+            grid_label = QLabel("Individual Task Analysis")
+            grid_label.setStyleSheet("font-weight: bold; font-size: 12px; padding: 5px;")
+            scroll_layout.addWidget(grid_label)
             
-            # Add the task row to the scroll layout
-            scroll_layout.addWidget(task_row_widget)
-            
-            # Store reference to last canvas for export (from the last group of the last task)
-            if task_idx == len(self.selected_tasks) - 1:
-                # ind_canvas will be the last one created in the inner loop
-                if 'ind_canvas' in locals():
-                    self.radar_canvas = ind_canvas
+            # Create individual charts for each task, listed vertically (in chronological order)
+            for task_idx, task_id in enumerate(sorted_tasks):
+                task_label = state.format_task(task_id)
+                
+                # Task section header
+                task_header = QLabel(f"Task: {task_label}")
+                task_header.setStyleSheet("font-weight: bold; font-size: 11px; padding: 10px 5px 5px 5px;")
+                scroll_layout.addWidget(task_header)
+                
+                # Create horizontal layout for this task row (group charts side by side)
+                task_row_layout = QHBoxLayout()
+                task_row_layout.setContentsMargins(0, 0, 0, 0)
+                task_row_layout.setSpacing(10)
+                task_row_widget = QWidget()
+                task_row_widget.setLayout(task_row_layout)
+                # Ensure the widget has proper size policy for scrolling
+                task_row_widget.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+                task_row_widget.setMinimumWidth(600)  # Minimum width for the row
+                
+                # Individual group charts for this task (side by side)
+                for group_id in self.selected_groups:
+                    if group_id not in normalized_data:
+                        continue
+                    
+                    group_data = normalized_data[group_id]
+                    if task_id not in group_data:
+                        continue
+                    
+                    task_data = group_data[task_id]
+                    group_name = state.get_effective_group_names().get(group_id, group_id)
+                    
+                    # Create individual chart
+                    # Adjust figure size based on number of groups (fewer groups = smaller width)
+                    num_groups_in_row = len([g for g in self.selected_groups if g in normalized_data and task_id in normalized_data[g]])
+                    if num_groups_in_row == 1:
+                        # Single column: limit width to reasonable size
+                        fig_width = 8
+                        max_width = 800
+                    else:
+                        # Multiple columns: use smaller width per chart
+                        fig_width = 10
+                        max_width = 1200
+                    
+                    ind_fig = Figure(figsize=(fig_width, 10))
+                    ind_canvas = FigureCanvas(ind_fig)
+                    # Set size constraints
+                    ind_canvas.setMinimumHeight(500)
+                    ind_canvas.setMinimumWidth(600)
+                    ind_canvas.setMaximumWidth(max_width)  # Limit maximum width
+                    ind_canvas.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+                    # Ensure canvas doesn't intercept wheel events - let scroll area handle them
+                    ind_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                    ax = ind_fig.add_subplot(111, projection='polar')
+                    
+                    # Extract values using same logic as aggregated view
+                    values = []
+                    for param in radar_parameters:
+                        value = None
+                        if isinstance(task_data, dict):
+                            if param in task_data:
+                                value = task_data[param]
+                            elif "_group_stats" in task_data and param in task_data["_group_stats"]:
+                                # Handle Standard Deviation of TCT from _group_stats
+                                value = task_data["_group_stats"][param]
+                        
+                        # Use 0.0 for missing values
+                        values.append(value if value is not None else 0.0)
+                    
+                    values += values[:1]
+                    
+                    # Use viridis color scheme for group mean mode
+                    color_map = plt.cm.viridis
+                    task_num = sorted_tasks.index(task_id) if task_id in sorted_tasks else 0
+                    color = color_map(task_num / max(len(sorted_tasks) - 1, 1))
+                    ax.plot(angles, values, 'o-', linewidth=3, color=color, markersize=8)
+                    ax.fill(angles, values, alpha=0.3, color=color)
+                    ax.set_xticks(angles[:-1])
+                    ax.set_xticklabels(radar_parameters, fontsize=14)
+                    ax.set_ylim(0, 1)
+                    ax.set_title(f"{task_label} - {group_name}", fontsize=16, fontweight='bold', pad=30)
+                    ax.grid(True)
+                    
+                    ind_fig.tight_layout()
+                    task_row_layout.addWidget(ind_canvas)
+                
+                # Add the task row to the scroll layout
+                scroll_layout.addWidget(task_row_widget)
+                
+                # Store reference to last canvas for export (from the last group of the last task)
+                if task_idx == len(sorted_tasks) - 1:
+                    # ind_canvas will be the last one created in the inner loop
+                    if 'ind_canvas' in locals():
+                        self.radar_canvas = ind_canvas
         
         scroll_layout.addStretch()
         scroll.setWidget(scroll_widget)
@@ -475,7 +747,8 @@ class ResultsWindow(QMainWindow):
                     # Group mean mode
                     if tct_param in task_data:
                         tct_value = task_data[tct_param].get('mean', 0)
-                        tct_data[group_name][task_id] = tct_value
+                        # Convert from milliseconds to seconds
+                        tct_data[group_name][task_id] = tct_value / 1000.0
                     # Individual participant mode
                     elif any(isinstance(v, dict) for v in task_data.values() if isinstance(v, dict)):
                         participant_values_dict = {}
@@ -485,8 +758,9 @@ class ResultsWindow(QMainWindow):
                                 continue
                             if isinstance(participant_data, dict) and tct_param in participant_data:
                                 p_value = participant_data[tct_param].get('mean', 0)
-                                participant_values_dict[participant] = p_value
-                                tct_values_list.append(p_value)
+                                # Convert from milliseconds to seconds
+                                participant_values_dict[participant] = p_value / 1000.0
+                                tct_values_list.append(p_value / 1000.0)
                         
                         if participant_values_dict:
                             tct_participant_data[group_name][task_id] = participant_values_dict
@@ -531,7 +805,8 @@ class ResultsWindow(QMainWindow):
             width = 0.8 / max(num_bars, 1) if num_bars > 0 else 0.8
             
             bar_idx = 0
-            colors = plt.cm.tab20(np.linspace(0, 1, len(all_participants) + len(self.selected_groups)))
+            # Use viridis color palette for better consistency with notebook
+            colors = plt.cm.viridis(np.linspace(0, 1, len(all_participants) + len(self.selected_groups)))
             color_idx = 0
             
             for group_id in self.selected_groups:
@@ -593,12 +868,14 @@ class ResultsWindow(QMainWindow):
             x = np.arange(len(tasks))
             width = 0.8 / len(group_values) if group_values else 0.8
             
+            # Use viridis color palette for group means
+            group_colors = plt.cm.viridis(np.linspace(0, 1, len(group_values)))
             for idx, (group_name, values) in enumerate(group_values.items()):
                 offset = (idx - len(group_values) / 2 + 0.5) * width
-                ax.bar(x + offset, values, width, label=group_name, alpha=0.8)
+                ax.bar(x + offset, values, width, label=group_name, alpha=0.8, color=group_colors[idx])
         
         ax.set_xlabel('Tasks')
-        ax.set_ylabel('Task Completion Time (ms)')
+        ax.set_ylabel('Task Completion Time (seconds)')
         ax.set_title('Task Completion Time by Group and Task')
         ax.set_xticks(x)
         ax.set_xticklabels(tasks, rotation=45, ha='right')
