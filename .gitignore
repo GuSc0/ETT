@@ -160,3 +160,10 @@ openai/
 # OS files
 Thumbs.db
 .DS_Store
+
+# Aider (AI coding assistant) cache files
+.aider.*
+.aider/
+
+# Cleanup folder (contains moved/archived files)
+cleanup/

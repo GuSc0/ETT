@@ -5,14 +5,21 @@ A software tool to analyze eye tracking data to compare different tasks with eac
 ## Project Structure
 
 ```
-eye_tracking_tool/
-├── main.py            # Entry point - run this to start the application
-├── main_window.py     # Main application window (PyQt6)
-├── dialogs.py         # Dialog windows (MultiSelect, Group Participants, Group Tasks)
-├── state.py           # Global application state management
-├── data_processor.py  # TSV validation and data extraction functions
-├── models.py          # Data models and constants
-└── requirements.txt   # Python dependencies
+ETT/
+├── main.py                    # Entry point - run this to start the application
+├── main_window.py            # Main application window (PyQt6)
+├── results_window.py          # Results display window with charts and tables
+├── dialogs.py                 # Dialog windows (MultiSelect, Group Participants, Group Tasks)
+├── state.py                   # Global application state management
+├── data_processor.py          # TSV validation and data extraction functions
+├── models.py                  # Data models and constants
+├── analysis.py                # Data analysis and aggregation functions
+├── executive_summary.py       # Executive summary text generation
+├── executive_summary_latex.py # LaTeX PDF generation for executive summaries
+├── executive_summary_template.tex # LaTeX template for PDF generation
+├── requirements.txt           # Python dependencies
+├── Input/                     # Input data files (TSV format)
+└── output/                    # Export output directory (timestamped subfolders)
 ```
 
 ## Installation

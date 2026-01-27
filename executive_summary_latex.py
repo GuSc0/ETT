@@ -21,8 +21,8 @@ from models import PARAMETER_OPTIONS
 
 
 BASE_DIR = Path(__file__).parent
-TEMPLATE = BASE_DIR / "eye_tracking_tool" / "executive_summary_template.tex"
-OUTPUT_DIR = BASE_DIR / "eye_tracking_tool" / "output"
+TEMPLATE = BASE_DIR / "executive_summary_template.tex"
+OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
 
 
@@ -107,6 +107,16 @@ def generate_latex_summary(
             "or install it from https://miktex.org/download"
         )
     
+    # Validate data
+    if not aggregated_data:
+        raise ValueError("No aggregated data available. Please run analysis first.")
+    
+    if not selected_groups:
+        raise ValueError("No groups selected for analysis.")
+    
+    if not selected_tasks:
+        raise ValueError("No tasks selected for analysis.")
+    
     # Get group names
     group_names = state.get_effective_group_names()
     group_name_list = [group_names.get(gid, gid) for gid in selected_groups]
@@ -119,6 +129,10 @@ def generate_latex_summary(
         active_parameters,
         parameter_weights
     )
+    
+    # Validate rankings data
+    if not group_rankings:
+        raise ValueError("No rankings data calculated. Check that groups and tasks have valid data.")
     
     # Determine hardest and easiest tasks (aggregate across groups)
     all_task_ranks = {}  # task_id -> list of overall ranks
@@ -242,8 +256,8 @@ def generate_latex_summary(
             "higher inter-participant variability, increased pupil diameter, "
             "and altered saccade behavior. Lower values indicate easier tasks."
         ),
-        "boxplot_path": "boxplot_tasks.pdf",  # Placeholder - can be generated later
-        "radar_path": "radar_tasks.pdf",  # Placeholder - can be generated later
+        "boxplot_path": "boxplot_tasks.pdf",  # Optional - will be skipped if file doesn't exist
+        "radar_path": "radar_tasks.pdf",  # Optional - will be skipped if file doesn't exist
         "consistency_text": (
             f"Analysis includes {len(selected_groups)} group(s) with {num_participants} total participants. "
             f"Rankings are based on normalized values across {len(active_parameters)} parameter(s)."
@@ -297,7 +311,28 @@ def generate_latex_summary(
             raise RuntimeError(f"PDF was not generated. LaTeX output: {result.stdout}")
     
     except subprocess.CalledProcessError as e:
-        error_msg = f"LaTeX compilation failed:\n{e.stderr}\n{e.stdout}"
-        raise RuntimeError(error_msg)
+        error_output = (e.stderr or "") + "\n" + (e.stdout or "")
+        
+        # Check for MiKTeX update error
+        if "you have not checked for MiKTeX updates" in error_output.lower() or "miktex update" in error_output.lower():
+            error_msg = (
+                "MiKTeX requires an update check before compilation.\n\n"
+                "To fix this issue:\n"
+                "1. Open a command prompt (cmd) or PowerShell\n"
+                "2. Run the following command:\n"
+                "   miktex update\n"
+                "   (or: miktex packages update)\n"
+                "3. Wait for MiKTeX to check and install any required updates\n"
+                "4. Try generating the executive summary again\n\n"
+                "Alternatively, you can update MiKTeX through the MiKTeX Console:\n"
+                "1. Open 'MiKTeX Console' from the Start menu\n"
+                "2. Go to 'Updates' tab\n"
+                "3. Click 'Check for updates' and install any available updates\n\n"
+                f"Original error:\n{error_output[:500]}"
+            )
+            raise RuntimeError(error_msg)
+        else:
+            error_msg = f"LaTeX compilation failed:\n{error_output[:1000]}"
+            raise RuntimeError(error_msg)
     except Exception as e:
         raise RuntimeError(f"Failed to compile LaTeX: {str(e)}")

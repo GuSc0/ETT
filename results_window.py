@@ -15,16 +15,116 @@ import matplotlib.patches as mpatches
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidget, QTableWidgetItem, QPushButton, QLabel, QMessageBox,
-    QFileDialog, QHeaderView, QScrollArea, QSizePolicy
+    QFileDialog, QHeaderView, QScrollArea, QSizePolicy, QDialog,
+    QCheckBox, QDialogButtonBox, QApplication
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QObject, QEvent
+from PyQt6.QtGui import QFont, QWheelEvent
+from pathlib import Path
 
 from state import state
 from analysis import (
     calculate_rankings, normalize_for_radar, generate_statistics_table,
     calculate_normalized_rankings_per_group, calculate_normalized_rankings_per_participant
 )
+
+
+class WheelEventFilter(QObject):
+    """Event filter to forward wheel events from canvas to scroll area."""
+    
+    def __init__(self, scroll_area: QScrollArea) -> None:
+        super().__init__()
+        self.scroll_area = scroll_area
+    
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        """Forward wheel events to scroll area."""
+        if event.type() == QEvent.Type.Wheel:
+            # Forward wheel event to scroll area's viewport
+            if isinstance(event, QWheelEvent):
+                # Create a new event for the scroll area viewport
+                from PyQt6.QtCore import QPoint
+                viewport = self.scroll_area.viewport()
+                # Get the global position and convert to viewport coordinates
+                global_pos = event.globalPosition()
+                viewport_pos = viewport.mapFromGlobal(global_pos.toPoint())
+                # Create new wheel event for viewport
+                new_event = QWheelEvent(
+                    viewport_pos,
+                    global_pos,
+                    event.pixelDelta(),
+                    event.angleDelta(),
+                    event.buttons(),
+                    event.modifiers(),
+                    event.phase(),
+                    event.inverted(),
+                    event.source()
+                )
+                QApplication.sendEvent(viewport, new_event)
+            return True  # Event handled
+        return False  # Let other events pass through
+
+
+class ExportDialog(QDialog):
+    """Dialog for selecting what to export."""
+    
+    def __init__(self, parent: QWidget, has_statistics: bool, has_rankings: bool, 
+                 has_radar: bool, has_tct: bool) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Export Options")
+        self.setMinimumSize(400, 300)
+        
+        layout = QVBoxLayout(self)
+        
+        # Instructions
+        instructions = QLabel("Select items to export:")
+        instructions.setStyleSheet("font-weight: bold; padding: 5px;")
+        layout.addWidget(instructions)
+        
+        # Checkboxes
+        self.export_stats_csv = QCheckBox("Export Statistics to CSV")
+        self.export_stats_csv.setChecked(has_statistics)
+        self.export_stats_csv.setEnabled(has_statistics)
+        layout.addWidget(self.export_stats_csv)
+        
+        self.export_rankings_csv = QCheckBox("Export Rankings to CSV")
+        self.export_rankings_csv.setChecked(has_rankings)
+        self.export_rankings_csv.setEnabled(has_rankings)
+        layout.addWidget(self.export_rankings_csv)
+        
+        self.export_radar_png = QCheckBox("Export Radar Chart(s) to PNG")
+        self.export_radar_png.setChecked(has_radar)
+        self.export_radar_png.setEnabled(has_radar)
+        layout.addWidget(self.export_radar_png)
+        
+        self.export_tct_png = QCheckBox("Export TCT Chart to PNG")
+        self.export_tct_png.setChecked(has_tct)
+        self.export_tct_png.setEnabled(has_tct)
+        layout.addWidget(self.export_tct_png)
+        
+        self.export_all_charts_png = QCheckBox("Print all images to one PNG")
+        self.export_all_charts_png.setChecked(False)
+        self.export_all_charts_png.setEnabled(has_radar or has_tct)
+        layout.addWidget(self.export_all_charts_png)
+        
+        layout.addStretch()
+        
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+    
+    def get_selections(self) -> dict:
+        """Return dictionary of selected export options."""
+        return {
+            'stats_csv': self.export_stats_csv.isChecked(),
+            'rankings_csv': self.export_rankings_csv.isChecked(),
+            'radar_png': self.export_radar_png.isChecked(),
+            'tct_png': self.export_tct_png.isChecked(),
+            'all_charts_png': self.export_all_charts_png.isChecked(),
+        }
 
 
 class ResultsWindow(QMainWindow):
@@ -54,8 +154,10 @@ class ResultsWindow(QMainWindow):
         self.show_statistics = show_statistics
         
         # Store canvas references for export
-        self.radar_canvas: Optional[FigureCanvas] = None
+        # Store as list of tuples: (canvas, task_id or None for aggregated)
+        self.radar_canvases: List[tuple] = []  # Store all radar charts with task info
         self.tct_canvas: Optional[FigureCanvas] = None
+        self.rankings_data: Optional[Dict] = None  # Store rankings data for CSV export
         
         # Filter parameters based on domains
         self._filter_parameters_by_domains()
@@ -94,17 +196,13 @@ class ResultsWindow(QMainWindow):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
         
-        # Export buttons
+        # Export button
         export_layout = QHBoxLayout()
         export_layout.addStretch()
         
-        self.export_csv_btn = QPushButton("Export Statistics to CSV")
-        self.export_csv_btn.clicked.connect(self._export_csv)
-        export_layout.addWidget(self.export_csv_btn)
-        
-        self.export_png_btn = QPushButton("Export Charts to PNG")
-        self.export_png_btn.clicked.connect(self._export_png)
-        export_layout.addWidget(self.export_png_btn)
+        self.export_btn = QPushButton("Export")
+        self.export_btn.clicked.connect(self._show_export_dialog)
+        export_layout.addWidget(self.export_btn)
         
         layout.addLayout(export_layout)
     
@@ -136,10 +234,221 @@ class ResultsWindow(QMainWindow):
         # Get parameter weights from state
         parameter_weights = state.parameter_weights.copy()
         
-        # Check if we're in participant mode
-        is_participant_mode = self.mode in ["Each participant for selected groups", "Group mean and individual participants"]
+        # For "Group mean and individual participants" mode, show both group mean and participant rankings
+        if self.mode == "Group mean and individual participants":
+            # First, show group mean rankings
+            group_rankings = calculate_normalized_rankings_per_group(
+                self.aggregated_data,
+                self.selected_groups,
+                self.selected_tasks,
+                self.active_parameters,
+                parameter_weights
+            )
+            
+            if group_rankings:
+                # Section header for group mean rankings
+                group_mean_header = QLabel("<b>Group Mean Rankings</b>")
+                group_mean_header.setStyleSheet("font-size: 18px; font-weight: bold; padding: 20px 5px 15px 5px; color: #0066cc; background-color: #e6f2ff; border-radius: 4px;")
+                scroll_layout.addWidget(group_mean_header)
+                
+                # Create one table per group for group mean rankings
+                for group_id in self.selected_groups:
+                    if group_id not in group_rankings:
+                        continue
+                    
+                    group_name = state.get_effective_group_names().get(group_id, group_id)
+                    ranking_df = group_rankings[group_id]
+                    
+                    # Group label
+                    group_label = QLabel(f"<b>{group_name}</b>")
+                    group_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px 5px 5px 5px;")
+                    scroll_layout.addWidget(group_label)
+                    
+                    # Create table
+                    table = QTableWidget()
+                    table.setRowCount(len(ranking_df))
+                    
+                    # Determine columns to display
+                    base_columns = ['Overall_Rank', 'Sum_of_Ranks', 'Task_Number', 
+                                  'indications', 'contraindications', 'neither']
+                    rank_columns = [col for col in ranking_df.columns if col.startswith('Rank_')]
+                    all_columns = base_columns + rank_columns
+                    
+                    table.setColumnCount(len(all_columns))
+                    table.setHorizontalHeaderLabels(all_columns)
+                    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+                    
+                    # Enable word wrapping for text columns
+                    text_columns = ['indications', 'contraindications', 'neither']
+                    
+                    for row_idx, (_, row) in enumerate(ranking_df.iterrows()):
+                        for col_idx, col_name in enumerate(all_columns):
+                            value = row[col_name]
+                            
+                            if col_name == 'Task_Number':
+                                # Format task with label
+                                task_label = state.format_task(str(value))
+                                item_text = task_label
+                            elif isinstance(value, (int, float)):
+                                if col_name in ['Overall_Rank', 'Sum_of_Ranks'] or col_name.startswith('Rank_'):
+                                    item_text = str(int(value))
+                                else:
+                                    item_text = f"{value:.4f}"
+                            else:
+                                item_text = str(value)
+                            
+                            item = QTableWidgetItem(item_text)
+                            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                            
+                            # Enable word wrapping for text columns
+                            if col_name in text_columns:
+                                item.setTextAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+                                table.setWordWrap(True)
+                            
+                            table.setItem(row_idx, col_idx, item)
+                    
+                    # Resize rows to fit content for text columns
+                    table.resizeRowsToContents()
+                    
+                    # Set minimum column widths for text columns to ensure readability
+                    for col_idx, col_name in enumerate(all_columns):
+                        if col_name in text_columns:
+                            table.setColumnWidth(col_idx, max(200, table.columnWidth(col_idx)))
+                    
+                    table.setSizeAdjustPolicy(QTableWidget.SizeAdjustPolicy.AdjustToContents)
+                    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                    table.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+                    scroll_layout.addWidget(table)
+                    
+                    # Add spacing between groups
+                    spacer = QLabel("")
+                    spacer.setMinimumHeight(10)
+                    scroll_layout.addWidget(spacer)
+                
+                # Add separator between group mean and participant rankings
+                separator = QLabel("─" * 80)
+                separator.setStyleSheet("color: #ccc; padding: 20px;")
+                scroll_layout.addWidget(separator)
+                
+                # Section header for individual participant rankings
+                participant_header = QLabel("<b>Individual Participant Rankings</b>")
+                participant_header.setStyleSheet("font-size: 18px; font-weight: bold; padding: 20px 5px 15px 5px; color: #0066cc; background-color: #e6f2ff; border-radius: 4px;")
+                scroll_layout.addWidget(participant_header)
+            
+            # Now show individual participant rankings
+            participant_rankings = calculate_normalized_rankings_per_participant(
+                self.aggregated_data,
+                self.selected_groups,
+                self.selected_tasks,
+                self.active_parameters,
+                parameter_weights
+            )
+            
+            if not participant_rankings:
+                if not group_rankings:
+                    scroll_layout.addWidget(QLabel("No ranking data available."))
+                scroll.setWidget(scroll_widget)
+                rank_layout.addWidget(scroll)
+                self.tabs.addTab(rank_widget, "Rankings")
+                return
+            
+            # Store rankings data for export (combine both if available)
+            if group_rankings:
+                # Store both types for export
+                self.rankings_data = {'group_means': group_rankings, 'participants': participant_rankings}
+            else:
+                self.rankings_data = participant_rankings
+            
+            # Create one table per participant per group
+            for group_id in self.selected_groups:
+                if group_id not in participant_rankings:
+                    continue
+                
+                group_name = state.get_effective_group_names().get(group_id, group_id)
+                
+                # Group header
+                group_header = QLabel(f"<b>{group_name}</b>")
+                group_header.setStyleSheet("font-size: 16px; font-weight: bold; padding: 15px 5px 10px 5px; color: #0066cc;")
+                scroll_layout.addWidget(group_header)
+                
+                # Sort participants for consistent display
+                participants = sorted(participant_rankings[group_id].keys())
+                
+                for participant_id in participants:
+                    ranking_df = participant_rankings[group_id][participant_id]
+                    
+                    # Participant label
+                    participant_label = QLabel(f"<b>Participant: {participant_id}</b>")
+                    participant_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 10px 5px 5px 20px;")
+                    scroll_layout.addWidget(participant_label)
+                    
+                    # Create table
+                    table = QTableWidget()
+                    table.setRowCount(len(ranking_df))
+                    
+                    # Determine columns to display
+                    base_columns = ['Overall_Rank', 'Sum_of_Ranks', 'Task_Number', 
+                                  'indications', 'contraindications', 'neither']
+                    rank_columns = [col for col in ranking_df.columns if col.startswith('Rank_')]
+                    all_columns = base_columns + rank_columns
+                    
+                    table.setColumnCount(len(all_columns))
+                    table.setHorizontalHeaderLabels(all_columns)
+                    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+                    
+                    # Enable word wrapping for text columns
+                    text_columns = ['indications', 'contraindications', 'neither']
+                    
+                    for row_idx, (_, row) in enumerate(ranking_df.iterrows()):
+                        for col_idx, col_name in enumerate(all_columns):
+                            value = row[col_name]
+                            
+                            if col_name == 'Task_Number':
+                                # Format task with label
+                                task_label = state.format_task(str(value))
+                                item_text = task_label
+                            elif isinstance(value, (int, float)):
+                                if col_name in ['Overall_Rank', 'Sum_of_Ranks'] or col_name.startswith('Rank_'):
+                                    item_text = str(int(value))
+                                else:
+                                    item_text = f"{value:.4f}"
+                            else:
+                                item_text = str(value)
+                            
+                            item = QTableWidgetItem(item_text)
+                            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                            
+                            # Enable word wrapping for text columns
+                            if col_name in text_columns:
+                                item.setTextAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+                                table.setWordWrap(True)
+                            
+                            table.setItem(row_idx, col_idx, item)
+                    
+                    # Resize rows to fit content
+                    table.resizeRowsToContents()
+                    
+                    # Set minimum column widths for text columns
+                    for col_idx, col_name in enumerate(all_columns):
+                        if col_name in text_columns:
+                            table.setColumnWidth(col_idx, max(200, table.columnWidth(col_idx)))
+                    
+                    table.setSizeAdjustPolicy(QTableWidget.SizeAdjustPolicy.AdjustToContents)
+                    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                    table.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+                    scroll_layout.addWidget(table)
+                    
+                    # Add spacing between participants
+                    spacer = QLabel("")
+                    spacer.setMinimumHeight(10)
+                    scroll_layout.addWidget(spacer)
+                
+                # Add spacing between groups
+                group_spacer = QLabel("")
+                group_spacer.setMinimumHeight(20)
+                scroll_layout.addWidget(group_spacer)
         
-        if is_participant_mode:
+        elif self.mode == "Each participant for selected groups":
             # Calculate rankings per participant
             participant_rankings = calculate_normalized_rankings_per_participant(
                 self.aggregated_data,
@@ -155,6 +464,9 @@ class ResultsWindow(QMainWindow):
                 rank_layout.addWidget(scroll)
                 self.tabs.addTab(rank_widget, "Rankings")
                 return
+            
+            # Store rankings data for export
+            self.rankings_data = participant_rankings
             
             # Create one table per participant per group
             for group_id in self.selected_groups:
@@ -260,6 +572,9 @@ class ResultsWindow(QMainWindow):
                 rank_layout.addWidget(scroll)
                 self.tabs.addTab(rank_widget, "Rankings")
                 return
+            
+            # Store rankings data for export
+            self.rankings_data = group_rankings
             
             # Create one table per group
             for group_id in self.selected_groups:
@@ -382,6 +697,15 @@ class ResultsWindow(QMainWindow):
         from data_processor import _natural_sort_key
         sorted_tasks = sorted(self.selected_tasks, key=_natural_sort_key)
         
+        # Add explanation label for radar chart normalization
+        explanation_label = QLabel(
+            "Values are normalized to 0-1 scale using min-max normalization "
+            "(0 = minimum value, 1 = maximum value across all tasks and groups)."
+        )
+        explanation_label.setWordWrap(True)
+        explanation_label.setStyleSheet("padding: 8px; background-color: #f0f0f0; border-radius: 4px; font-size: 10pt; color: #666;")
+        radar_layout.addWidget(explanation_label)
+        
         # Scroll area for the entire chart
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -401,17 +725,27 @@ class ResultsWindow(QMainWindow):
         
         num_groups = len(self.selected_groups)
         if num_groups > 0:
-            agg_cols = min(3, num_groups)
+            # Use 2 columns for 3+ groups to prevent horizontal crowding
+            agg_cols = 2 if num_groups >= 3 else min(3, num_groups)
             agg_rows = (num_groups + agg_cols - 1) // agg_cols
-            agg_fig = Figure(figsize=(14, 5 * agg_rows))
+            # Increase figure width when 3+ groups for better spacing
+            fig_width = 20 if num_groups >= 3 else 14
+            fig_height = 6 * agg_rows
+            agg_fig = Figure(figsize=(fig_width, fig_height))
             agg_canvas = FigureCanvas(agg_fig)
             # Set minimum height and size policy for aggregated view
             agg_canvas.setMinimumHeight(500)
             agg_canvas.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
             agg_canvas.setMinimumWidth(800)
-            agg_canvas.setMaximumWidth(1400)  # Limit maximum width
-            # Ensure canvas doesn't intercept wheel events - let scroll area handle them
+            agg_canvas.setMaximumWidth(2500)  # Increased limit to allow expansion
+            # Install event filter to forward wheel events to scroll area
+            wheel_filter = WheelEventFilter(scroll)
+            agg_canvas.installEventFilter(wheel_filter)
             agg_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            
+            # Collect all labels for shared legend (only from first group since all groups have same tasks)
+            shared_labels = []
+            shared_handles = []
             
             for idx, group_id in enumerate(self.selected_groups):
                 if group_id not in normalized_data:
@@ -450,18 +784,55 @@ class ResultsWindow(QMainWindow):
                         color_map = plt.cm.viridis
                         task_num = sorted_tasks.index(task_id) if task_id in sorted_tasks else 0
                         color = color_map(task_num / max(len(sorted_tasks) - 1, 1))
-                        ax.plot(angles, values, 'o-', linewidth=2, label=task_label, color=color)
+                        line = ax.plot(angles, values, 'o-', linewidth=2, label=task_label, color=color)[0]
                         ax.fill(angles, values, alpha=0.25, color=color)
+                        
+                        # Collect labels and handles for shared legend (only from first group)
+                        if idx == 0 and task_label not in shared_labels:
+                            shared_labels.append(task_label)
+                            shared_handles.append(line)
                 
+                # Fix text overflow: reduce font size and use shorter parameter names
                 ax.set_xticks(angles[:-1])
-                ax.set_xticklabels(radar_parameters, fontsize=12)
+                # Create shorter labels to prevent overflow
+                short_labels = []
+                for param in radar_parameters:
+                    if len(param) > 15:
+                        # Abbreviate long parameter names
+                        if "Saccade Velocity" in param:
+                            short_labels.append("Saccade Vel.")
+                        elif "Peak Saccade Velocity" in param:
+                            short_labels.append("Peak Vel.")
+                        elif "Saccade Amplitude" in param:
+                            short_labels.append("Saccade Amp.")
+                        elif "Standard Deviation" in param:
+                            short_labels.append("Std Dev TCT")
+                        elif "Pupil Diameter" in param:
+                            short_labels.append("Pupil Diam.")
+                        else:
+                            short_labels.append(param[:15])
+                    else:
+                        short_labels.append(param)
+                ax.set_xticklabels(short_labels, fontsize=9)
+                ax.tick_params(pad=25)  # Move labels further from chart center
                 ax.set_ylim(0, 1)
-                ax.set_title(group_name, fontsize=14, fontweight='bold', pad=30)
+                ax.set_title(group_name, fontsize=12, fontweight='bold', pad=35)
                 ax.grid(True)
-                ax.legend(loc='upper right', bbox_to_anchor=(1.4, 1.2), fontsize=10)
+                # Don't add individual legend - will use shared legend below
             
-            agg_fig.tight_layout()
+            # Add shared legend below all charts (only if we have labels)
+            if shared_handles and num_groups > 1:
+                # Create a single shared legend at the bottom, placed further below
+                agg_fig.legend(shared_handles, shared_labels, 
+                              loc='lower center', bbox_to_anchor=(0.5, -0.12), 
+                              ncol=min(len(shared_labels), 6), fontsize=9, frameon=True)
+            
+            # Use subplots_adjust to add explicit spacing between subplots
+            agg_fig.subplots_adjust(hspace=0.6, wspace=0.6, top=0.95, bottom=0.15)
+            agg_fig.tight_layout(pad=6.0)  # Significantly increased padding for better spacing
             scroll_layout.addWidget(agg_canvas)
+            # Store aggregated canvas for export (None = aggregated view, not task-specific)
+            self.radar_canvases.append((agg_canvas, None))
         
         # Separator
         separator = QLabel("─" * 80)
@@ -505,7 +876,7 @@ class ResultsWindow(QMainWindow):
                 # Create horizontal layout for this task row (group charts side by side)
                 task_row_layout = QHBoxLayout()
                 task_row_layout.setContentsMargins(0, 0, 0, 0)
-                task_row_layout.setSpacing(10)
+                task_row_layout.setSpacing(30)  # Increased spacing to prevent overlap
                 task_row_widget = QWidget()
                 task_row_widget.setLayout(task_row_layout)
                 task_row_widget.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
@@ -542,6 +913,9 @@ class ResultsWindow(QMainWindow):
                     ind_canvas.setMinimumWidth(600)
                     ind_canvas.setMaximumWidth(max_width)
                     ind_canvas.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+                    # Install event filter to forward wheel events to scroll area
+                    wheel_filter = WheelEventFilter(scroll)
+                    ind_canvas.installEventFilter(wheel_filter)
                     ind_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
                     ax = ind_fig.add_subplot(111, projection='polar')
                     
@@ -593,23 +967,40 @@ class ResultsWindow(QMainWindow):
                             ax.plot(angles, values, 'o-', linewidth=2, label=participant_id, color=color)
                             ax.fill(angles, values, alpha=0.25, color=color)
                     
+                    # Fix text overflow: reduce font size and use shorter parameter names
                     ax.set_xticks(angles[:-1])
-                    ax.set_xticklabels(radar_parameters, fontsize=14)
+                    short_labels = []
+                    for param in radar_parameters:
+                        if len(param) > 15:
+                            # Abbreviate long parameter names
+                            if "Saccade Velocity" in param:
+                                short_labels.append("Saccade Vel.")
+                            elif "Peak Saccade Velocity" in param:
+                                short_labels.append("Peak Vel.")
+                            elif "Saccade Amplitude" in param:
+                                short_labels.append("Saccade Amp.")
+                            elif "Standard Deviation" in param:
+                                short_labels.append("Std Dev TCT")
+                            elif "Pupil Diameter" in param:
+                                short_labels.append("Pupil Diam.")
+                            else:
+                                short_labels.append(param[:15])
+                        else:
+                            short_labels.append(param)
+                    ax.set_xticklabels(short_labels, fontsize=8)
                     ax.set_ylim(0, 1)
-                    ax.set_title(f"{task_label} - {group_name}", fontsize=16, fontweight='bold', pad=30)
+                    ax.set_title(f"{task_label} - {group_name}", fontsize=13, fontweight='bold', pad=20)
                     ax.grid(True)
-                    ax.legend(loc='upper right', bbox_to_anchor=(1.4, 1.2), fontsize=10)
+                    # Place legend below chart to prevent overlap with adjacent charts
+                    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=min(len(participants), 4), fontsize=8, frameon=True)
                     
-                    ind_fig.tight_layout()
+                    ind_fig.tight_layout(pad=3.0)  # Increased padding for better spacing and legend visibility
                     task_row_layout.addWidget(ind_canvas)
+                    # Store individual canvas for export with task_id
+                    self.radar_canvases.append((ind_canvas, task_id))
                 
                 # Add the task row to the scroll layout
                 scroll_layout.addWidget(task_row_widget)
-                
-                # Store reference to last canvas for export
-                if task_idx == len(sorted_tasks) - 1:
-                    if 'ind_canvas' in locals():
-                        self.radar_canvas = ind_canvas
         else:
             # GROUP MEAN MODE: Show individual charts for each task
             # BOTTOM SECTION: Individual charts listed vertically (larger, scrollable)
@@ -629,7 +1020,7 @@ class ResultsWindow(QMainWindow):
                 # Create horizontal layout for this task row (group charts side by side)
                 task_row_layout = QHBoxLayout()
                 task_row_layout.setContentsMargins(0, 0, 0, 0)
-                task_row_layout.setSpacing(10)
+                task_row_layout.setSpacing(30)  # Increased spacing to prevent overlap
                 task_row_widget = QWidget()
                 task_row_widget.setLayout(task_row_layout)
                 # Ensure the widget has proper size policy for scrolling
@@ -667,7 +1058,9 @@ class ResultsWindow(QMainWindow):
                     ind_canvas.setMinimumWidth(600)
                     ind_canvas.setMaximumWidth(max_width)  # Limit maximum width
                     ind_canvas.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-                    # Ensure canvas doesn't intercept wheel events - let scroll area handle them
+                    # Install event filter to forward wheel events to scroll area
+                    wheel_filter = WheelEventFilter(scroll)
+                    ind_canvas.installEventFilter(wheel_filter)
                     ind_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
                     ax = ind_fig.add_subplot(111, projection='polar')
                     
@@ -693,23 +1086,38 @@ class ResultsWindow(QMainWindow):
                     color = color_map(task_num / max(len(sorted_tasks) - 1, 1))
                     ax.plot(angles, values, 'o-', linewidth=3, color=color, markersize=8)
                     ax.fill(angles, values, alpha=0.3, color=color)
+                    # Fix text overflow: reduce font size and use shorter parameter names
                     ax.set_xticks(angles[:-1])
-                    ax.set_xticklabels(radar_parameters, fontsize=14)
+                    short_labels = []
+                    for param in radar_parameters:
+                        if len(param) > 15:
+                            # Abbreviate long parameter names
+                            if "Saccade Velocity" in param:
+                                short_labels.append("Saccade Vel.")
+                            elif "Peak Saccade Velocity" in param:
+                                short_labels.append("Peak Vel.")
+                            elif "Saccade Amplitude" in param:
+                                short_labels.append("Saccade Amp.")
+                            elif "Standard Deviation" in param:
+                                short_labels.append("Std Dev TCT")
+                            elif "Pupil Diameter" in param:
+                                short_labels.append("Pupil Diam.")
+                            else:
+                                short_labels.append(param[:15])
+                        else:
+                            short_labels.append(param)
+                    ax.set_xticklabels(short_labels, fontsize=8)
                     ax.set_ylim(0, 1)
-                    ax.set_title(f"{task_label} - {group_name}", fontsize=16, fontweight='bold', pad=30)
+                    ax.set_title(f"{task_label} - {group_name}", fontsize=13, fontweight='bold', pad=20)
                     ax.grid(True)
                     
-                    ind_fig.tight_layout()
+                    ind_fig.tight_layout(pad=3.0)  # Increased padding for better spacing
                     task_row_layout.addWidget(ind_canvas)
+                    # Store individual canvas for export with task_id
+                    self.radar_canvases.append((ind_canvas, task_id))
                 
                 # Add the task row to the scroll layout
                 scroll_layout.addWidget(task_row_widget)
-                
-                # Store reference to last canvas for export (from the last group of the last task)
-                if task_idx == len(sorted_tasks) - 1:
-                    # ind_canvas will be the last one created in the inner loop
-                    if 'ind_canvas' in locals():
-                        self.radar_canvas = ind_canvas
         
         scroll_layout.addStretch()
         scroll.setWidget(scroll_widget)
@@ -800,14 +1208,34 @@ class ResultsWindow(QMainWindow):
             tasks = [state.format_task(tid) for tid in task_ids]
             all_participants = sorted(list(all_participants))
             
-            x = np.arange(len(tasks))
-            num_bars = len(self.selected_groups) * (len(all_participants) + (1 if self.mode == "Group mean and individual participants" else 0))
-            width = 0.8 / max(num_bars, 1) if num_bars > 0 else 0.8
+            # Add small spacing between tasks (not between groups within a task)
+            # Use a spacing factor: 1.0 for bar width + 0.15 for gap between tasks
+            task_spacing = 1.15  # 1.0 for bars + 0.15 gap between task clusters
+            x = np.arange(len(tasks)) * task_spacing
+            
+            # Calculate number of bars per task
+            if self.mode == "Group mean and individual participants":
+                # For combined mode, we'll show group means separately or make them distinct
+                # Count: group means + all participants
+                bars_per_group = 1 + len(all_participants)  # 1 group mean + participants
+                num_bars = len(self.selected_groups) * bars_per_group
+            else:
+                # For participant-only mode, just participants
+                num_bars = len(self.selected_groups) * len(all_participants)
+            
+            # Calculate width to make bars completely adjacent (no gaps)
+            # Each task position has num_bars bars that should fill the space between positions
+            # Total space per task = 1.0, so each bar width = 1.0 / num_bars
+            width = 1.0 / max(num_bars, 1) if num_bars > 0 else 0.8
+            
+            # Use distinct colors for each bar - generate enough colors
+            num_colors_needed = num_bars
+            colors = plt.cm.tab20(np.linspace(0, 1, min(num_colors_needed, 20)))
+            if num_colors_needed > 20:
+                # Extend color palette if needed
+                colors = np.vstack([colors, plt.cm.Set3(np.linspace(0, 1, num_colors_needed - 20))])
             
             bar_idx = 0
-            # Use viridis color palette for better consistency with notebook
-            colors = plt.cm.viridis(np.linspace(0, 1, len(all_participants) + len(self.selected_groups)))
-            color_idx = 0
             
             for group_id in self.selected_groups:
                 group_name = state.get_effective_group_names().get(group_id, group_id)
@@ -821,12 +1249,15 @@ class ResultsWindow(QMainWindow):
                         else:
                             mean_values.append(0)
                     
-                    offset = (bar_idx - num_bars / 2 + 0.5) * width
-                    ax.bar(x + offset, mean_values, width, 
+                    # Position group mean bar - calculate offset so bars are adjacent
+                    # Bars fill space from x-0.5 to x+0.5, so offset = (bar_idx - (num_bars-1)/2) * width
+                    offset = (bar_idx - (num_bars - 1) / 2) * width
+                    # Use thicker bar for group mean (width * 1.2) and different style
+                    ax.bar(x + offset, mean_values, width * 1.2, 
                           label=f"{group_name} (Mean)", 
-                          alpha=0.8, color=colors[color_idx % len(colors)])
+                          alpha=0.9, color=colors[bar_idx % len(colors)], 
+                          edgecolor='black', linewidth=2)
                     bar_idx += 1
-                    color_idx += 1
                 
                 # Show individual participants
                 if group_name in tct_participant_data:
@@ -840,12 +1271,13 @@ class ResultsWindow(QMainWindow):
                             else:
                                 participant_values.append(0)
                         
-                        offset = (bar_idx - num_bars / 2 + 0.5) * width
+                        # Position participant bar - calculate offset so bars are adjacent
+                        # Bars fill space from x-0.5 to x+0.5, so offset = (bar_idx - (num_bars-1)/2) * width
+                        offset = (bar_idx - (num_bars - 1) / 2) * width
                         ax.bar(x + offset, participant_values, width,
                               label=f"{group_name} - {participant}",
-                              alpha=0.6, color=colors[color_idx % len(colors)])
+                              alpha=0.7, color=colors[bar_idx % len(colors)])
                         bar_idx += 1
-                        color_idx += 1
         
         else:
             # Show only group means
@@ -865,13 +1297,17 @@ class ResultsWindow(QMainWindow):
                 for task_id in task_ids:
                     group_values[group_name].append(task_data.get(task_id, 0))
             
-            x = np.arange(len(tasks))
-            width = 0.8 / len(group_values) if group_values else 0.8
+            # Add small spacing between tasks (not between groups within a task)
+            task_spacing = 1.15  # 1.0 for bars + 0.15 gap between task clusters
+            x = np.arange(len(tasks)) * task_spacing
+            # Make bars adjacent (no gaps) - use full width divided by number of groups
+            width = 1.0 / len(group_values) if group_values else 0.8
             
-            # Use viridis color palette for group means
-            group_colors = plt.cm.viridis(np.linspace(0, 1, len(group_values)))
+            # Use distinct colors for each group
+            group_colors = plt.cm.tab10(np.linspace(0, 1, len(group_values)))
             for idx, (group_name, values) in enumerate(group_values.items()):
-                offset = (idx - len(group_values) / 2 + 0.5) * width
+                # Calculate offset so bars are adjacent (no gaps)
+                offset = (idx - (len(group_values) - 1) / 2) * width
                 ax.bar(x + offset, values, width, label=group_name, alpha=0.8, color=group_colors[idx])
         
         ax.set_xlabel('Tasks')
@@ -931,18 +1367,67 @@ class ResultsWindow(QMainWindow):
         stats_layout.addWidget(table)
         self.tabs.addTab(stats_widget, "Statistics")
     
-    def _export_csv(self) -> None:
-        """Export statistics to CSV."""
-        filename, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Statistics to CSV",
-            "",
-            "CSV files (*.csv);;All files (*.*)"
-        )
+    def _show_export_dialog(self) -> None:
+        """Show export dialog and handle exports."""
+        # Determine what's available
+        has_statistics = self.show_statistics
+        has_rankings = self.rankings_data is not None and "Rank" in self.domains
+        has_radar = len(self.radar_canvases) > 0 and "Radar Chart" in self.domains
+        has_tct = self.tct_canvas is not None and "Task Completion Time" in self.domains
         
-        if not filename:
+        dialog = ExportDialog(self, has_statistics, has_rankings, has_radar, has_tct)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         
+        selections = dialog.get_selections()
+        
+        # Create date-time stamped output folder in ETT repository root
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # Ensure we're using the ETT repository root directory
+        ett_root = Path(__file__).parent
+        output_dir = ett_root / "output" / timestamp
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Export selected items
+        exported_items = []
+        
+        if selections['stats_csv']:
+            if self._export_statistics_csv(output_dir):
+                exported_items.append("Statistics CSV")
+        
+        if selections['rankings_csv']:
+            if self._export_rankings_csv(output_dir):
+                exported_items.append("Rankings CSV")
+        
+        if selections['all_charts_png']:
+            # Export both combined and separate when "Print all images to one PNG" is selected
+            if self._export_all_charts_png(output_dir):
+                exported_items.append("All Charts Combined PNG")
+            # Also export separately
+            if self._export_radar_charts_png(output_dir):
+                exported_items.append("Radar Charts PNG")
+            if self._export_tct_chart_png(output_dir):
+                exported_items.append("TCT Chart PNG")
+        else:
+            if selections['radar_png']:
+                if self._export_radar_charts_png(output_dir):
+                    exported_items.append("Radar Charts PNG")
+            if selections['tct_png']:
+                if self._export_tct_chart_png(output_dir):
+                    exported_items.append("TCT Chart PNG")
+        
+        if exported_items:
+            QMessageBox.information(
+                self, 
+                "Export Success", 
+                f"Exported: {', '.join(exported_items)}\n\nFiles saved to: {output_dir}"
+            )
+        else:
+            QMessageBox.warning(self, "Export Warning", "No items were exported.")
+    
+    def _export_statistics_csv(self, output_dir: Path) -> bool:
+        """Export statistics to CSV."""
         try:
             stats_df = generate_statistics_table(
                 self.aggregated_data,
@@ -952,44 +1437,287 @@ class ResultsWindow(QMainWindow):
             )
             
             if stats_df.empty:
-                QMessageBox.warning(self, "Export Error", "No data to export.")
-                return
+                QMessageBox.warning(self, "Export Error", "No statistics data to export.")
+                return False
             
+            filename = output_dir / "statistics.csv"
             stats_df.to_csv(filename, index=False)
-            QMessageBox.information(self, "Export Success", f"Statistics exported to {filename}")
+            return True
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
+            QMessageBox.critical(self, "Export Error", f"Failed to export statistics: {str(e)}")
+            return False
     
-    def _export_png(self) -> None:
-        """Export charts to PNG."""
-        filename, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Charts to PNG",
-            "",
-            "PNG files (*.png);;All files (*.*)"
-        )
-        
-        if not filename:
-            return
-        
+    def _export_rankings_csv(self, output_dir: Path) -> bool:
+        """Export rankings to CSV."""
         try:
-            # Export each chart from stored references
-            saved_count = 0
-            base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+            if self.rankings_data is None:
+                QMessageBox.warning(self, "Export Error", "No rankings data to export.")
+                return False
             
-            # Export radar chart if available
-            if self.radar_canvas is not None:
-                self.radar_canvas.figure.savefig(f"{base_name}_radar.png", dpi=300, bbox_inches='tight')
-                saved_count += 1
+            # Combine all rankings into one DataFrame
+            all_rankings = []
             
-            # Export TCT chart if available
-            if self.tct_canvas is not None:
-                self.tct_canvas.figure.savefig(f"{base_name}_tct.png", dpi=300, bbox_inches='tight')
-                saved_count += 1
-            
-            if saved_count > 0:
-                QMessageBox.information(self, "Export Success", f"Exported {saved_count} chart(s).")
+            # Check if rankings_data is the combined structure (for "Group mean and individual participants" mode)
+            if isinstance(self.rankings_data, dict) and 'group_means' in self.rankings_data and 'participants' in self.rankings_data:
+                # Export group means first
+                for group_id, ranking_df in self.rankings_data['group_means'].items():
+                    ranking_df = ranking_df.copy()
+                    ranking_df.insert(0, 'Group', state.get_effective_group_names().get(group_id, group_id))
+                    ranking_df.insert(1, 'Participant', 'Group Mean')
+                    all_rankings.append(ranking_df)
+                
+                # Then export individual participants
+                for group_id, group_data in self.rankings_data['participants'].items():
+                    if isinstance(group_data, dict):
+                        for participant_id, ranking_df in group_data.items():
+                            ranking_df = ranking_df.copy()
+                            ranking_df.insert(0, 'Group', state.get_effective_group_names().get(group_id, group_id))
+                            ranking_df.insert(1, 'Participant', participant_id)
+                            all_rankings.append(ranking_df)
             else:
-                QMessageBox.warning(self, "Export Warning", "No charts available to export.")
+                # Standard structure (either group means or participants only)
+                for group_id, group_data in self.rankings_data.items():
+                    if isinstance(group_data, dict):
+                        # Participant mode: group_data is {participant_id: DataFrame}
+                        for participant_id, ranking_df in group_data.items():
+                            ranking_df = ranking_df.copy()
+                            ranking_df.insert(0, 'Group', state.get_effective_group_names().get(group_id, group_id))
+                            ranking_df.insert(1, 'Participant', participant_id)
+                            all_rankings.append(ranking_df)
+                    else:
+                        # Group mean mode: group_data is DataFrame
+                        ranking_df = group_data.copy()
+                        ranking_df.insert(0, 'Group', state.get_effective_group_names().get(group_id, group_id))
+                        all_rankings.append(ranking_df)
+            
+            if not all_rankings:
+                QMessageBox.warning(self, "Export Error", "No rankings data to export.")
+                return False
+            
+            import pandas as pd
+            combined_df = pd.concat(all_rankings, ignore_index=True)
+            filename = output_dir / "rankings.csv"
+            combined_df.to_csv(filename, index=False)
+            return True
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
+            QMessageBox.critical(self, "Export Error", f"Failed to export rankings: {str(e)}")
+            return False
+    
+    def _export_radar_charts_png(self, output_dir: Path) -> bool:
+        """Export radar charts to PNG."""
+        try:
+            if not self.radar_canvases:
+                QMessageBox.warning(self, "Export Error", "No radar charts to export.")
+                return False
+            
+            saved_count = 0
+            for idx, canvas_info in enumerate(self.radar_canvases):
+                # Handle both old format (just canvas) and new format (tuple with task_id)
+                if isinstance(canvas_info, tuple):
+                    canvas, task_id = canvas_info
+                else:
+                    canvas = canvas_info
+                    task_id = None
+                
+                if task_id is None:
+                    filename = output_dir / f"radar_chart_aggregated.png"
+                else:
+                    task_label = state.format_task(task_id)
+                    filename = output_dir / f"radar_chart_task_{task_label.replace(' ', '_')}_{idx + 1}.png"
+                
+                canvas.figure.savefig(filename, dpi=300, bbox_inches='tight')
+                saved_count += 1
+            
+            return saved_count > 0
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export radar charts: {str(e)}")
+            return False
+    
+    def _export_tct_chart_png(self, output_dir: Path) -> bool:
+        """Export TCT chart to PNG."""
+        try:
+            if self.tct_canvas is None:
+                QMessageBox.warning(self, "Export Error", "No TCT chart to export.")
+                return False
+            
+            filename = output_dir / "tct_chart.png"
+            self.tct_canvas.figure.savefig(filename, dpi=300, bbox_inches='tight')
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export TCT chart: {str(e)}")
+            return False
+    
+    def _export_all_charts_png(self, output_dir: Path) -> bool:
+        """Export all charts combined into one PNG image, organized by task."""
+        try:
+            import tempfile
+            from PIL import Image
+            from collections import defaultdict
+            
+            if not self.radar_canvases and not self.tct_canvas:
+                QMessageBox.warning(self, "Export Error", "No charts to export.")
+                return False
+            
+            # Organize radar charts by task_id
+            # Group charts: aggregated (None) first, then by task_id
+            aggregated_charts = []
+            charts_by_task = defaultdict(list)
+            
+            for canvas_info in self.radar_canvases:
+                # Handle both old format (just canvas) and new format (tuple with task_id)
+                if isinstance(canvas_info, tuple):
+                    canvas, task_id = canvas_info
+                else:
+                    canvas = canvas_info
+                    task_id = None
+                
+                if task_id is None:
+                    aggregated_charts.append(canvas)
+                else:
+                    charts_by_task[task_id].append(canvas)
+            
+            # Collect all chart images using temporary files
+            chart_images = []
+            chart_positions = []  # (row, col) for each chart
+            temp_files = []
+            
+            try:
+                # Process aggregated charts first (one per row, full width)
+                for canvas in aggregated_charts:
+                    temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                    temp_files.append(temp_file.name)
+                    temp_file.close()
+                    canvas.figure.savefig(temp_file.name, format='png', dpi=300, bbox_inches='tight')
+                    chart_images.append(Image.open(temp_file.name))
+                    chart_positions.append((len(chart_positions), 0))  # Full width, one per row
+                
+                # Process task charts - group by task, same task on same row
+                # Sort tasks naturally
+                from data_processor import _natural_sort_key
+                sorted_task_ids = sorted(charts_by_task.keys(), key=_natural_sort_key)
+                
+                current_row = len(aggregated_charts)
+                max_cols_per_row = 0
+                
+                for task_id in sorted_task_ids:
+                    task_charts = charts_by_task[task_id]
+                    # All charts for this task go on the same row
+                    for col, canvas in enumerate(task_charts):
+                        temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                        temp_files.append(temp_file.name)
+                        temp_file.close()
+                        canvas.figure.savefig(temp_file.name, format='png', dpi=300, bbox_inches='tight')
+                        chart_images.append(Image.open(temp_file.name))
+                        chart_positions.append((current_row, col))
+                        max_cols_per_row = max(max_cols_per_row, col + 1)
+                    current_row += 1
+                
+                # Add TCT chart at the end (full width)
+                if self.tct_canvas:
+                    temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                    temp_files.append(temp_file.name)
+                    temp_file.close()
+                    self.tct_canvas.figure.savefig(temp_file.name, format='png', dpi=300, bbox_inches='tight')
+                    chart_images.append(Image.open(temp_file.name))
+                    chart_positions.append((current_row, 0))
+                    current_row += 1
+                
+                # Calculate dimensions for combined image
+                max_width = max(img.width for img in chart_images) if chart_images else 800
+                max_height = max(img.height for img in chart_images) if chart_images else 600
+                
+                # Determine grid: max columns per row, total rows
+                total_rows = current_row
+                cols = max(max_cols_per_row, 1)  # At least 1 column
+                
+                # Create combined image
+                combined_width = cols * max_width
+                combined_height = total_rows * max_height
+                combined_img = Image.new('RGB', (combined_width, combined_height), color='white')
+                
+                # Paste charts into combined image at their positions
+                for idx, (img, (row, col)) in enumerate(zip(chart_images, chart_positions)):
+                    x_offset = col * max_width + (max_width - img.width) // 2
+                    y_offset = row * max_height + (max_height - img.height) // 2
+                    combined_img.paste(img, (x_offset, y_offset))
+                
+                # Save combined image
+                filename = output_dir / "all_charts_combined.png"
+                combined_img.save(filename, 'PNG', dpi=(300, 300))
+                
+                return True
+            finally:
+                # Clean up: close images and delete temporary files
+                for img in chart_images:
+                    img.close()
+                for temp_file_path in temp_files:
+                    try:
+                        Path(temp_file_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass  # Ignore errors when cleaning up temp files
+            
+        except ImportError:
+            # Fallback if PIL is not available - use simpler matplotlib approach
+            try:
+                # Count total charts
+                num_radar = len(self.radar_canvases) if self.radar_canvases else 0
+                num_tct = 1 if self.tct_canvas else 0
+                total_charts = num_radar + num_tct
+                
+                if total_charts == 0:
+                    QMessageBox.warning(self, "Export Error", "No charts to export.")
+                    return False
+                
+                # Calculate grid layout
+                cols = 2
+                rows = (total_charts + cols - 1) // cols
+                
+                # Create combined figure
+                combined_fig = Figure(figsize=(cols * 10, rows * 8))
+                
+                chart_idx = 0
+                
+                # Add radar charts by saving and loading as images
+                if self.radar_canvases:
+                    for canvas_info in self.radar_canvases:
+                        # Handle both old format (just canvas) and new format (tuple with task_id)
+                        if isinstance(canvas_info, tuple):
+                            radar_canvas, _ = canvas_info
+                        else:
+                            radar_canvas = canvas_info
+                        
+                        row = chart_idx // cols
+                        col = chart_idx % cols
+                        subplot_idx = row * cols + col + 1
+                        ax = combined_fig.add_subplot(rows, cols, subplot_idx)
+                        ax.axis('off')
+                        ax.text(0.5, 0.5, f'Radar Chart {chart_idx + 1}\n(Use PIL for full image combination)', 
+                               ha='center', va='center', transform=ax.transAxes)
+                        chart_idx += 1
+                
+                # Add TCT chart
+                if self.tct_canvas:
+                    row = chart_idx // cols
+                    col = chart_idx % cols
+                    subplot_idx = row * cols + col + 1
+                    ax = combined_fig.add_subplot(rows, cols, subplot_idx)
+                    ax.axis('off')
+                    ax.text(0.5, 0.5, 'TCT Chart\n(Use PIL for full image combination)', 
+                           ha='center', va='center', transform=ax.transAxes)
+                
+                combined_fig.tight_layout()
+                filename = output_dir / "all_charts_combined.png"
+                combined_fig.savefig(filename, dpi=300, bbox_inches='tight')
+                QMessageBox.warning(
+                    self, 
+                    "Export Notice", 
+                    "PIL/Pillow not available. Charts exported separately.\n"
+                    "Install Pillow (pip install Pillow) for full image combination."
+                )
+                return True
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export combined charts: {str(e)}")
+                return False
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export combined charts: {str(e)}")
+            return False

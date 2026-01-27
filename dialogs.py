@@ -414,6 +414,11 @@ class GroupTasksDialog(QDialog):
         btn_layout.addWidget(close_btn)
         main_layout.addLayout(btn_layout)
 
+        # Prevent Enter key from closing the dialog (remove default button)
+        close_btn.setDefault(False)
+        close_btn.setAutoDefault(False)
+        self.label_edit.setFocus()  # Set focus to label edit so Enter works there
+
         self._on_task_changed()
 
     def _populate_table(self) -> None:
@@ -484,3 +489,6 @@ class GroupTasksDialog(QDialog):
         # Refresh table
         self._populate_table()
         self._update_preview()
+        
+        # Keep focus on label edit so user can continue editing
+        self.label_edit.setFocus()

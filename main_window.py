@@ -12,8 +12,8 @@ from PyQt6.QtWidgets import (
     QFrame, QMessageBox, QFileDialog, QMenu, QMenuBar, QSplitter,
     QDialog, QTextEdit, QSlider, QScrollArea, QProgressDialog, QApplication
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import Qt, QSize, QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty
+from PyQt6.QtGui import QAction, QPainter, QColor
 
 from state import state
 from models import EXPECTED_COLUMNS, PARAMETER_OPTIONS
@@ -35,6 +35,63 @@ from executive_summary import (
 from executive_summary_latex import generate_latex_summary, find_pdflatex
 
 
+class LoadingDialog(QDialog):
+    """Loading dialog with animated spinner."""
+    
+    def __init__(self, parent: Optional[QWidget] = None, message: str = "Loading...") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Loading")
+        self.setModal(True)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowTitleHint)
+        self.setMinimumSize(250, 120)
+        self.setMaximumSize(250, 120)
+        
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(15)
+        
+        # Spinner label with rotating text
+        self.spinner_label = QLabel()
+        self.spinner_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spinner_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.spinner_label.setText(message)
+        layout.addWidget(self.spinner_label)
+        
+        # Animation for spinner
+        self.rotation = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._update_animation)
+        self.timer.start(100)  # Update every 100ms
+    
+    def _update_animation(self) -> None:
+        """Update animation frame."""
+        self.rotation = (self.rotation + 45) % 360
+        # Create rotating spinner characters
+        spinner_chars = ['|', '/', '-', '\\']
+        char_idx = (self.rotation // 90) % len(spinner_chars)
+        current_text = self.spinner_label.text()
+        # Extract message part (before spinner char)
+        if ' ' in current_text:
+            message_part = current_text.rsplit(' ', 1)[0]
+        else:
+            message_part = "Loading"
+        self.spinner_label.setText(f"{message_part} {spinner_chars[char_idx]}")
+    
+    def showEvent(self, event) -> None:
+        """Start animation when shown."""
+        super().showEvent(event)
+        self.timer.start()
+    
+    def hideEvent(self, event) -> None:
+        """Stop animation when hidden."""
+        super().hideEvent(event)
+        self.timer.stop()
+    
+    def setMessage(self, message: str) -> None:
+        """Update the loading message."""
+        self.spinner_label.setText(message)
+
+
 class MainWindow(QMainWindow):
     """Main application window."""
 
@@ -42,6 +99,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Eye Tracking Analysis Tool")
         self.setMinimumSize(1200, 720)
+
+        # Ensure output folder exists in ETT repository root
+        from pathlib import Path
+        ett_root = Path(__file__).parent
+        output_dir = ett_root / "output"
+        output_dir.mkdir(exist_ok=True)
 
         # Result domain checkboxes
         self.result_domain_vars: Dict[str, QCheckBox] = {}
@@ -220,13 +283,21 @@ class MainWindow(QMainWindow):
         weighting_layout = QVBoxLayout(weighting_group)
         weighting_layout.setSpacing(8)
         
-        # Instructions
+        # Header with instructions and reset button
+        header_layout = QHBoxLayout()
         weight_instructions = QLabel(
             "Adjust parameter weights (0-300%, default 100%). Higher weights increase the parameter's influence on rankings."
         )
         weight_instructions.setWordWrap(True)
         weight_instructions.setStyleSheet("padding: 6px; color: #666; font-size: 10pt;")
-        weighting_layout.addWidget(weight_instructions)
+        header_layout.addWidget(weight_instructions)
+        
+        reset_weights_btn = QPushButton("Reset")
+        reset_weights_btn.setFixedWidth(80)
+        reset_weights_btn.clicked.connect(self._reset_all_weights)
+        header_layout.addWidget(reset_weights_btn)
+        
+        weighting_layout.addLayout(header_layout)
         
         # Scrollable area for weight sliders
         weight_scroll = QScrollArea()
@@ -700,12 +771,14 @@ class MainWindow(QMainWindow):
         percentage = slider_value
         self.parameter_weight_labels[parameter].setText(f"{weight:.2f} ({percentage}%)")
     
-    def _update_weight_display(self, parameter: str, slider_value: int) -> None:
-        """Update the weight display label when slider changes."""
-        weight = slider_value / 100.0  # Convert 0-300 to 0.0-3.0
-        state.parameter_weights[parameter] = weight
-        percentage = slider_value
-        self.parameter_weight_labels[parameter].setText(f"{weight:.2f} ({percentage}%)")
+    def _reset_all_weights(self) -> None:
+        """Reset all parameter weights to default (100%)."""
+        for param in PARAMETER_OPTIONS:
+            state.parameter_weights[param] = 1.0
+            if param in self.parameter_weight_sliders:
+                self.parameter_weight_sliders[param].setValue(100)  # Reset slider to 100%
+            if param in self.parameter_weight_labels:
+                self.parameter_weight_labels[param].setText("1.00 (100%)")
     
     def _open_group_participants(self) -> None:
         """Open the group participants dialog."""
@@ -1180,26 +1253,12 @@ class MainWindow(QMainWindow):
         # Check if statistics tab should be shown
         show_statistics = self.result_domain_vars.get("Statistics", QCheckBox()).isChecked()
         
-        # Show loading indicator with actual progress
-        progress = QProgressDialog("Processing data...", None, 0, 100, self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setCancelButton(None)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-        progress.show()
+        # Show loading dialog
+        loading = LoadingDialog(self, "Processing data...")
+        loading.show()
         QApplication.processEvents()  # Update UI
         
         try:
-            # Step 1: Validate and prepare (10%)
-            progress.setValue(10)
-            progress.setLabelText("Validating data...")
-            QApplication.processEvents()
-            
-            # Step 2: Aggregate data (10-80%)
-            progress.setValue(20)
-            progress.setLabelText("Aggregating data...")
-            QApplication.processEvents()
-            
             aggregated_data = aggregate_by_groups(
                 state.df,
                 selected_groups,
@@ -1209,16 +1268,8 @@ class MainWindow(QMainWindow):
                 parameter_weights
             )
             
-            # Step 3: Prepare results window (80-100%)
-            progress.setValue(80)
-            progress.setLabelText("Preparing results...")
+            loading.close()
             QApplication.processEvents()
-            
-            progress.setValue(100)
-            progress.setLabelText("Complete!")
-            QApplication.processEvents()
-            
-            progress.close()
             
             if not aggregated_data:
                 QMessageBox.warning(self, "No Data", "No data available for the selected groups and tasks.")
@@ -1237,7 +1288,7 @@ class MainWindow(QMainWindow):
             )
             results_window.show()
         except Exception as e:
-            progress.close()
+            loading.close()
             QMessageBox.critical(self, "Analysis Error", f"Failed to generate results: {str(e)}")
     
     def _on_print_exec_summary(self) -> None:
@@ -1246,17 +1297,40 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No data", "Load a TSV file first.")
             return
         
-        selected_groups = [gid for gid, cb in self.result_group_checkboxes.items() if cb.isChecked()]
-        selected_tasks = [tid for tid, cb in self.result_task_checkboxes.items() if cb.isChecked()]
+        # Check if MikTeX is installed - REQUIRED for PDF generation
+        pdflatex_path = find_pdflatex()
+        if not pdflatex_path:
+            QMessageBox.critical(
+                self,
+                "MikTeX Not Found",
+                "MikTeX is required to generate the executive summary PDF.\n\n"
+                "Please install MikTeX from:\n"
+                "https://miktex.org/download\n\n"
+                "After installation:\n"
+                "1. Restart this application\n"
+                "2. MikTeX will automatically install required packages on first use\n\n"
+                "For detailed installation instructions, see:\n"
+                "INSTALL_MIKTEX.md in the project directory."
+            )
+            return
+        
+        # Get ALL groups (regardless of checkbox selection)
+        effective_groups = state.get_effective_participant_groups()
+        all_groups = list(effective_groups.keys()) if effective_groups else []
+        
+        # Get ALL tasks (regardless of checkbox selection)
+        # Include all tasks including baseline tasks 0a/0b for complete summary
+        all_tasks = state.tasks_cache.copy() if state.tasks_cache else []
+        
+        if not all_groups:
+            QMessageBox.warning(self, "No Groups Available", "No participant groups found in the data.")
+            return
+        
+        if not all_tasks:
+            QMessageBox.warning(self, "No Tasks Available", "No tasks found in the data.")
+            return
+        
         mode = self.mode_combo.currentText()
-        
-        if not selected_groups:
-            QMessageBox.warning(self, "No Groups Selected", "Please select at least one group.")
-            return
-        
-        if not selected_tasks:
-            QMessageBox.warning(self, "No Tasks Selected", "Please select at least one task.")
-            return
         
         deselected = []
         if self.deselect_enabled_cb.isChecked():
@@ -1271,90 +1345,85 @@ class MainWindow(QMainWindow):
         # Get parameter weights
         parameter_weights = state.parameter_weights.copy()
         
+        # Show loading dialog
+        loading = LoadingDialog(self, "Generating LaTeX PDF...")
+        loading.show()
+        QApplication.processEvents()
+        
         try:
-            # Aggregate data
+            # Aggregate data using ALL groups and tasks
             aggregated_data = aggregate_by_groups(
                 state.df,
-                selected_groups,
-                selected_tasks,
+                all_groups,
+                all_tasks,
                 deselected,
                 mode,
                 parameter_weights
             )
             
             if not aggregated_data:
-                QMessageBox.warning(self, "No Data", "No data available for the selected groups and tasks.")
+                loading.close()
+                QMessageBox.warning(self, "No Data", "No data available for the groups and tasks.")
                 return
             
-            # Generate summary
-            summary_text = generate_executive_summary(
+            # Generate LaTeX PDF directly (MikTeX is already verified above)
+            # Get TSV file path if available
+            df_path = getattr(state, 'loaded_file_path', None)
+            
+            # Generate LaTeX PDF directly
+            pdf_path = generate_latex_summary(
                 aggregated_data,
-                selected_groups,
-                selected_tasks,
+                all_groups,
+                all_tasks,
                 active_parameters,
-                mode
+                mode,
+                parameter_weights,
+                df_path
             )
             
-            statistics_text = format_statistics_table_for_summary(
-                aggregated_data,
-                selected_tasks,
-                selected_groups,
-                mode
+            loading.close()
+            QApplication.processEvents()
+            
+            # Ask user if they want to open the PDF
+            reply = QMessageBox.question(
+                self,
+                "PDF Generated Successfully",
+                f"LaTeX PDF generated at:\n{pdf_path}\n\nWould you like to open it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             
-            # Ask user for export format
-            dialog = QDialog(self)
-            dialog.setWindowTitle("Executive Summary")
-            dialog.setMinimumSize(800, 600)
-            
-            layout = QVBoxLayout(dialog)
-            
-            # Text display
-            text_edit = QTextEdit()
-            text_edit.setReadOnly(True)
-            text_edit.setPlainText(summary_text + "\n\n" + "DETAILED STATISTICS\n" + "-" * 80 + "\n\n" + statistics_text)
-            layout.addWidget(text_edit)
-            
-            # Buttons
-            btn_layout = QHBoxLayout()
-            btn_layout.addStretch()
-            
-            export_txt_btn = QPushButton("Export to Text File")
-            export_txt_btn.clicked.connect(lambda: self._export_summary(export_summary_to_text, summary_text, statistics_text, ".txt"))
-            btn_layout.addWidget(export_txt_btn)
-            
-            export_pdf_btn = QPushButton("Export to PDF (matplotlib)")
-            export_pdf_btn.clicked.connect(lambda: self._export_summary(export_summary_to_pdf, summary_text, statistics_text, ".pdf"))
-            btn_layout.addWidget(export_pdf_btn)
-            
-            # Add LaTeX PDF export button if MikTeX is available
-            if find_pdflatex():
-                export_latex_btn = QPushButton("Export to PDF (LaTeX/MikTeX)")
-                export_latex_btn.clicked.connect(
-                    lambda: self._export_latex_summary(
-                        aggregated_data, selected_groups, selected_tasks,
-                        active_parameters, mode, parameter_weights
-                    )
-                )
-                btn_layout.addWidget(export_latex_btn)
-            
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(dialog.accept)
-            btn_layout.addWidget(close_btn)
-            
-            layout.addLayout(btn_layout)
-            
-            dialog.exec()
+            if reply == QMessageBox.StandardButton.Yes:
+                import os
+                import platform
+                if platform.system() == 'Windows':
+                    os.startfile(pdf_path)
+                elif platform.system() == 'Darwin':  # macOS
+                    os.system(f'open "{pdf_path}"')
+                else:  # Linux
+                    os.system(f'xdg-open "{pdf_path}"')
             
         except Exception as e:
+            loading.close()
             QMessageBox.critical(self, "Summary Error", f"Failed to generate executive summary: {str(e)}")
     
     def _export_summary(self, export_func, summary_text: str, statistics_text: str, extension: str) -> None:
         """Helper method to export summary."""
+        from pathlib import Path
+        from datetime import datetime
+        
+        # Create date-time stamped output folder in ETT repository root
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # Ensure we're using the ETT repository root directory
+        ett_root = Path(__file__).parent
+        output_dir = ett_root / "output" / timestamp
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        default_path = str(output_dir / f"executive_summary{extension}")
+        
         filename, _ = QFileDialog.getSaveFileName(
             self,
             f"Export Executive Summary",
-            f"executive_summary{extension}",
+            default_path,
             f"{extension.upper().lstrip('.')} files (*{extension});;All files (*.*)"
         )
         
@@ -1377,11 +1446,9 @@ class MainWindow(QMainWindow):
         parameter_weights: Dict[str, float]
     ) -> None:
         """Export executive summary using LaTeX/MikTeX."""
-        # Show progress dialog
-        progress = QProgressDialog("Generating LaTeX PDF...", None, 0, 0, self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setCancelButton(None)
-        progress.show()
+        # Show loading dialog
+        loading = LoadingDialog(self, "Generating PDF...")
+        loading.show()
         QApplication.processEvents()
         
         try:
@@ -1399,7 +1466,8 @@ class MainWindow(QMainWindow):
                 df_path
             )
             
-            progress.close()
+            loading.close()
+            QApplication.processEvents()
             
             # Ask user if they want to open the PDF
             reply = QMessageBox.question(
@@ -1420,7 +1488,7 @@ class MainWindow(QMainWindow):
                     os.system(f'xdg-open "{pdf_path}"')
         
         except Exception as e:
-            progress.close()
+            loading.close()
             QMessageBox.critical(
                 self,
                 "LaTeX Export Error",

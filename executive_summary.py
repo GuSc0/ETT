@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 import pandas as pd
+import numpy as np
 from datetime import datetime
 
 from state import state
@@ -30,23 +31,66 @@ def generate_executive_summary(
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append("")
     
+    # Aggregate data across all groups (ignore group boundaries)
+    aggregated_all_data = {}
+    for group_id, group_data in aggregated_data.items():
+        for task_id, task_data in group_data.items():
+            if task_id not in aggregated_all_data:
+                aggregated_all_data[task_id] = {}
+            
+            # Collect all parameter values across all groups for this task
+            if isinstance(task_data, dict):
+                # Check if it's group mean mode or individual participant mode
+                is_individual = any(
+                    isinstance(k, str) and isinstance(v, dict) and 
+                    any(isinstance(vv, dict) for vv in v.values() if isinstance(vv, dict))
+                    for k, v in task_data.items() if k != "_group_stats"
+                )
+                
+                if is_individual:
+                    # Individual participant mode: collect all participant values
+                    for participant, participant_data in task_data.items():
+                        if participant == "_group_stats":
+                            continue
+                        if isinstance(participant_data, dict):
+                            for parameter, metrics in participant_data.items():
+                                if parameter not in aggregated_all_data[task_id]:
+                                    aggregated_all_data[task_id][parameter] = []
+                                if isinstance(metrics, dict) and 'mean' in metrics:
+                                    aggregated_all_data[task_id][parameter].append(metrics['mean'])
+                else:
+                    # Group mean mode: collect group mean values
+                    for parameter, metrics in task_data.items():
+                        if parameter == "_group_stats":
+                            continue
+                        if isinstance(metrics, dict) and 'mean' in metrics:
+                            if parameter not in aggregated_all_data[task_id]:
+                                aggregated_all_data[task_id][parameter] = []
+                            aggregated_all_data[task_id][parameter].append(metrics['mean'])
+    
+    # Calculate overall statistics (ignoring groups)
+    overall_data = {}
+    for task_id, task_params in aggregated_all_data.items():
+        overall_data[task_id] = {}
+        for parameter, values in task_params.items():
+            if values:
+                overall_data[task_id][parameter] = {
+                    'mean': float(np.mean(values)),
+                    'std': float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
+                    'median': float(np.median(values)),
+                    'min': float(np.min(values)),
+                    'max': float(np.max(values)),
+                }
+    
     # Overview
     lines.append("OVERVIEW")
     lines.append("-" * 80)
     lines.append(f"Analysis Mode: {mode}")
-    lines.append(f"Number of Groups: {len(selected_groups)}")
+    lines.append(f"Number of Groups: {len(selected_groups)} (aggregated)")
     lines.append(f"Number of Tasks: {len(selected_tasks)}")
     lines.append(f"Parameters Analyzed: {len(active_parameters)}")
     lines.append("")
-    
-    # Group information
-    group_names = state.get_effective_group_names()
-    lines.append("GROUPS ANALYZED:")
-    for group_id in selected_groups:
-        group_name = group_names.get(group_id, group_id)
-        if group_id in aggregated_data:
-            num_tasks = len([t for t in selected_tasks if t in aggregated_data[group_id]])
-            lines.append(f"  - {group_name}: {num_tasks} task(s)")
+    lines.append("Note: Statistics are calculated across all participants, ignoring group boundaries.")
     lines.append("")
     
     # Task information
@@ -66,28 +110,27 @@ def generate_executive_summary(
         
         lines.append(f"\n{parameter}:")
         
-        # Get rankings
-        rankings = calculate_rankings(aggregated_data, parameter)
+        # Calculate rankings from overall aggregated data (ignoring groups)
+        task_values = {}
+        for task_id, task_data in overall_data.items():
+            if parameter in task_data:
+                task_values[task_id] = task_data[parameter]['mean']
         
-        if not rankings:
+        if not task_values:
             lines.append("  No data available for this parameter.")
             continue
         
-        # Find highest and lowest
-        if rankings:
-            highest = rankings[0]  # First is highest rank (highest value)
-            lowest = rankings[-1]   # Last is lowest rank (lowest value)
+        # Find highest and lowest tasks
+        if task_values:
+            sorted_tasks = sorted(task_values.items(), key=lambda x: x[1], reverse=True)
+            highest_task_id, value_h = sorted_tasks[0]
+            lowest_task_id, value_l = sorted_tasks[-1]
             
-            group_name_h = state.get_effective_group_names().get(highest[0], highest[0])
-            task_label_h = state.format_task(highest[1])
-            value_h = highest[2]
+            task_label_h = state.format_task(highest_task_id)
+            task_label_l = state.format_task(lowest_task_id)
             
-            group_name_l = state.get_effective_group_names().get(lowest[0], lowest[0])
-            task_label_l = state.format_task(lowest[1])
-            value_l = lowest[2]
-            
-            lines.append(f"  Highest: {task_label_h} ({group_name_h}) - {value_h:.4f}")
-            lines.append(f"  Lowest: {task_label_l} ({group_name_l}) - {value_l:.4f}")
+            lines.append(f"  Highest: {task_label_h} - {value_h:.4f}")
+            lines.append(f"  Lowest: {task_label_l} - {value_l:.4f}")
             
             # Calculate range
             if value_h > value_l:
@@ -96,42 +139,31 @@ def generate_executive_summary(
     
     lines.append("")
     
-    # Group comparisons
-    if len(selected_groups) > 1:
-        lines.append("GROUP COMPARISONS")
-        lines.append("-" * 80)
+    # Overall statistics summary (across all tasks and groups)
+    lines.append("OVERALL STATISTICS SUMMARY")
+    lines.append("-" * 80)
+    
+    for parameter in active_parameters:
+        if parameter == "Standard Deviation of TCT":
+            continue
         
-        for parameter in active_parameters:
-            if parameter == "Standard Deviation of TCT":
-                continue
+        lines.append(f"\n{parameter}:")
+        
+        # Calculate overall mean across all tasks
+        all_values = []
+        for task_id, task_data in overall_data.items():
+            if parameter in task_data:
+                all_values.append(task_data[parameter]['mean'])
+        
+        if all_values:
+            overall_mean = float(np.mean(all_values))
+            overall_std = float(np.std(all_values, ddof=1)) if len(all_values) > 1 else 0.0
+            overall_min = float(np.min(all_values))
+            overall_max = float(np.max(all_values))
             
-            lines.append(f"\n{parameter}:")
-            
-            # Calculate group means
-            group_means = {}
-            for group_id in selected_groups:
-                if group_id not in aggregated_data:
-                    continue
-                
-                group_data = aggregated_data[group_id]
-                group_name = group_names.get(group_id, group_id)
-                
-                values = []
-                for task_id in selected_tasks:
-                    if task_id not in group_data:
-                        continue
-                    
-                    task_data = group_data[task_id]
-                    if isinstance(task_data, dict) and parameter in task_data:
-                        values.append(task_data[parameter].get('mean', 0))
-                
-                if values:
-                    group_means[group_name] = sum(values) / len(values)
-            
-            if group_means:
-                sorted_groups = sorted(group_means.items(), key=lambda x: x[1], reverse=True)
-                for group_name, mean_value in sorted_groups:
-                    lines.append(f"  {group_name}: {mean_value:.4f}")
+            lines.append(f"  Overall Mean: {overall_mean:.4f}")
+            lines.append(f"  Overall Std Dev: {overall_std:.4f}")
+            lines.append(f"  Range: {overall_min:.4f} to {overall_max:.4f}")
     
     lines.append("")
     lines.append("=" * 80)
@@ -147,12 +179,63 @@ def format_statistics_table_for_summary(
 ) -> str:
     """
     Format statistics table as a text string for inclusion in summary.
+    Note: This function aggregates data across all groups (ignoring group boundaries).
     """
+    # Aggregate data across all groups
+    aggregated_all_data = {}
+    for group_id, group_data in aggregated_data.items():
+        for task_id, task_data in group_data.items():
+            if task_id not in aggregated_all_data:
+                aggregated_all_data[task_id] = {}
+            
+            if isinstance(task_data, dict):
+                is_individual = any(
+                    isinstance(k, str) and isinstance(v, dict) and 
+                    any(isinstance(vv, dict) for vv in v.values() if isinstance(vv, dict))
+                    for k, v in task_data.items() if k != "_group_stats"
+                )
+                
+                if is_individual:
+                    for participant, participant_data in task_data.items():
+                        if participant == "_group_stats":
+                            continue
+                        if isinstance(participant_data, dict):
+                            for parameter, metrics in participant_data.items():
+                                if parameter not in aggregated_all_data[task_id]:
+                                    aggregated_all_data[task_id][parameter] = []
+                                if isinstance(metrics, dict) and 'mean' in metrics:
+                                    aggregated_all_data[task_id][parameter].append(metrics['mean'])
+                else:
+                    for parameter, metrics in task_data.items():
+                        if parameter == "_group_stats":
+                            continue
+                        if isinstance(metrics, dict) and 'mean' in metrics:
+                            if parameter not in aggregated_all_data[task_id]:
+                                aggregated_all_data[task_id][parameter] = []
+                            aggregated_all_data[task_id][parameter].append(metrics['mean'])
+    
+    # Create a simplified aggregated structure for generate_statistics_table
+    # Create a single "ALL" group with aggregated means
+    simplified_data = {"ALL": {}}
+    for task_id, task_params in aggregated_all_data.items():
+        simplified_data["ALL"][task_id] = {}
+        for parameter, values in task_params.items():
+            if values:
+                simplified_data["ALL"][task_id][parameter] = {
+                    'mean': float(np.mean(values)),
+                    'std': float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
+                    'median': float(np.median(values)),
+                    'min': float(np.min(values)),
+                    'max': float(np.max(values)),
+                    'q1': float(np.percentile(values, 25)),
+                    'q3': float(np.percentile(values, 75)),
+                }
+    
     stats_df = generate_statistics_table(
-        aggregated_data,
+        simplified_data,
         selected_tasks,
-        selected_groups,
-        mode
+        ["ALL"],
+        "Only group mean"
     )
     
     if stats_df.empty:
