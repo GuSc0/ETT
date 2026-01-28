@@ -7,7 +7,7 @@ from __future__ import annotations
 import subprocess
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import pandas as pd
 import numpy as np
@@ -150,6 +150,134 @@ def _generate_tct_chart_pdf(
         return None
 
 
+def _generate_radar_chart_pdf(
+    aggregated_data: Dict,
+    selected_groups: List[str],
+    selected_tasks: List[str],
+    active_parameters: List[str],
+    output_dir: Path,
+) -> Optional[str]:
+    """
+    Generate a radar chart of the mean values of all participants for each task.
+    One polygon per task; axes = parameters (TCT excluded). Values normalized 0-1 per parameter.
+    Returns filename (e.g. 'radar_chart.pdf') if created, else None.
+    """
+    radar_parameters = [
+        p for p in active_parameters
+        if p != "Task Completion Time (TCT)"
+    ]
+    if not radar_parameters or not selected_tasks:
+        return None
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+
+    try:
+        # task_means[task_id][param] = mean value across all participants/groups
+        task_means: Dict[str, Dict[str, float]] = {}
+        for task_id in selected_tasks:
+            task_means[task_id] = {p: [] for p in radar_parameters}
+
+        for group_id in selected_groups:
+            if group_id not in aggregated_data:
+                continue
+            group_data = aggregated_data[group_id]
+            for task_id in selected_tasks:
+                if task_id not in group_data:
+                    continue
+                task_data = group_data[task_id]
+                if not isinstance(task_data, dict):
+                    continue
+
+                for param in radar_parameters:
+                    vals = []
+                    if param in task_data and isinstance(task_data[param], dict):
+                        vals.append(task_data[param].get("mean", 0))
+                    if "_group_stats" in task_data and isinstance(task_data["_group_stats"], dict) and param in task_data["_group_stats"]:
+                        vals.append(task_data["_group_stats"][param].get("mean", 0))
+                    for k, v in task_data.items():
+                        if k == "_group_stats" or not isinstance(v, dict):
+                            continue
+                        if param in v and isinstance(v.get(param), dict):
+                            vals.append(v[param].get("mean", 0))
+                    if vals:
+                        task_means[task_id][param].extend(vals)
+
+        # Single mean per (task, param) and normalize 0-1 per parameter
+        for task_id in task_means:
+            for param in radar_parameters:
+                L = task_means[task_id][param]
+                task_means[task_id][param] = float(np.mean(L)) if L else 0.0
+
+        param_min_max: Dict[str, Tuple[float, float]] = {}
+        for param in radar_parameters:
+            values = [task_means[t][param] for t in selected_tasks if task_means[t][param]]
+            param_min_max[param] = (min(values), max(values)) if values else (0.0, 1.0)
+
+        try:
+            from data_processor import _natural_sort_key
+        except ImportError:
+            _natural_sort_key = lambda x: (str(x).isdigit(), str(x))
+
+        sorted_tasks = sorted(selected_tasks, key=_natural_sort_key)
+        angles = np.linspace(0, 2 * np.pi, len(radar_parameters), endpoint=False).tolist()
+        angles += angles[:1]
+
+        fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(projection="polar"))
+        colors = plt.cm.viridis(np.linspace(0, 1, len(sorted_tasks)))
+
+        for idx, task_id in enumerate(sorted_tasks):
+            values = []
+            for param in radar_parameters:
+                v = task_means[task_id][param]
+                lo, hi = param_min_max[param]
+                if hi > lo:
+                    v = (v - lo) / (hi - lo)
+                else:
+                    v = 0.5 if v else 0.0
+                values.append(v)
+            values += values[:1]
+            task_label = state.format_task(task_id)
+            ax.plot(angles, values, "o-", linewidth=2, label=task_label, color=colors[idx])
+            ax.fill(angles, values, alpha=0.2, color=colors[idx])
+
+        short_labels = []
+        for param in radar_parameters:
+            if len(param) > 18:
+                if "Saccade Velocity" in param:
+                    short_labels.append("Mean Saccade Vel.")
+                elif "Peak Saccade Velocity" in param:
+                    short_labels.append("Peak Saccade Vel.")
+                elif "Saccade Amplitude" in param:
+                    short_labels.append("Saccade Amp.")
+                elif "Standard Deviation" in param:
+                    short_labels.append("Std Dev TCT")
+                elif "Pupil Diameter" in param:
+                    short_labels.append("Pupil Diam.")
+                else:
+                    short_labels.append(param[:18])
+            else:
+                short_labels.append(param)
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(short_labels, fontsize=9)
+        ax.set_ylim(0, 1)
+        ax.set_title("Mean values of all participants per task (normalized 0–1)", fontsize=11, pad=20)
+        ax.legend(loc="upper left", bbox_to_anchor=(1.15, 1), fontsize=8)
+        ax.grid(True)
+        fig.tight_layout()
+
+        pdf_path = output_dir / "radar_chart.pdf"
+        fig.savefig(pdf_path, format="pdf", bbox_inches="tight")
+        plt.close(fig)
+        return "radar_chart.pdf"
+    except Exception:
+        return None
+
+
 def find_pdflatex() -> Optional[str]:
     """Find pdflatex executable in PATH or common MikTeX locations."""
     # First try to find in PATH
@@ -235,7 +363,11 @@ def generate_latex_summary(
     tct_filename = _generate_tct_chart_pdf(
         aggregated_data, selected_groups, selected_tasks, output_dir
     )
-    
+    # Generate radar chart of mean values of all participants per task for Evidence section
+    radar_filename = _generate_radar_chart_pdf(
+        aggregated_data, selected_groups, selected_tasks, active_parameters, output_dir
+    )
+
     # Determine hardest and easiest tasks (aggregate across groups)
     all_task_ranks = {}  # task_id -> list of overall ranks
     
@@ -359,7 +491,7 @@ def generate_latex_summary(
             "and altered saccade behavior. Lower values indicate easier tasks."
         ),
         "boxplot_path": "boxplot_tasks.pdf",  # Optional - will be skipped if file doesn't exist
-        "radar_path": "radar_tasks.pdf",  # Optional - will be skipped if file doesn't exist
+        "radar_path": radar_filename or ".no-radar-chart",  # Radar chart PDF generated above
         "tct_path": tct_filename or ".no-tct-chart",  # TCT chart PDF generated above; .no-tct-chart never exists
         "consistency_text": (
             f"Analysis includes {len(selected_groups)} group(s) with {num_participants} total participants. "
