@@ -23,6 +23,7 @@ from PyQt6.QtGui import QFont, QWheelEvent
 from pathlib import Path
 
 from state import state
+from dialogs import LoadingDialog
 from analysis import (
     calculate_rankings, normalize_for_radar, generate_statistics_table,
     calculate_normalized_rankings_per_group, calculate_normalized_rankings_per_participant
@@ -800,9 +801,9 @@ class ResultsWindow(QMainWindow):
                     if len(param) > 15:
                         # Abbreviate long parameter names
                         if "Saccade Velocity" in param:
-                            short_labels.append("Saccade Vel.")
+                            short_labels.append("Mean Saccade Vel.")
                         elif "Peak Saccade Velocity" in param:
-                            short_labels.append("Peak Vel.")
+                            short_labels.append("Peak Saccade Vel.")
                         elif "Saccade Amplitude" in param:
                             short_labels.append("Saccade Amp.")
                         elif "Standard Deviation" in param:
@@ -821,7 +822,7 @@ class ResultsWindow(QMainWindow):
                 # Don't add individual legend - will use shared legend below
             
             # Add shared legend below all charts (only if we have labels)
-            if shared_handles and num_groups > 1:
+            if shared_handles:
                 # Create a single shared legend at the bottom, placed further below
                 agg_fig.legend(shared_handles, shared_labels, 
                               loc='lower center', bbox_to_anchor=(0.5, -0.12), 
@@ -974,9 +975,9 @@ class ResultsWindow(QMainWindow):
                         if len(param) > 15:
                             # Abbreviate long parameter names
                             if "Saccade Velocity" in param:
-                                short_labels.append("Saccade Vel.")
+                                short_labels.append("Mean Saccade Vel.")
                             elif "Peak Saccade Velocity" in param:
-                                short_labels.append("Peak Vel.")
+                                short_labels.append("Peak Saccade Vel.")
                             elif "Saccade Amplitude" in param:
                                 short_labels.append("Saccade Amp.")
                             elif "Standard Deviation" in param:
@@ -1093,9 +1094,9 @@ class ResultsWindow(QMainWindow):
                         if len(param) > 15:
                             # Abbreviate long parameter names
                             if "Saccade Velocity" in param:
-                                short_labels.append("Saccade Vel.")
+                                short_labels.append("Mean Saccade Vel.")
                             elif "Peak Saccade Velocity" in param:
-                                short_labels.append("Peak Vel.")
+                                short_labels.append("Peak Saccade Vel.")
                             elif "Saccade Amplitude" in param:
                                 short_labels.append("Saccade Amp.")
                             elif "Standard Deviation" in param:
@@ -1400,22 +1401,54 @@ class ResultsWindow(QMainWindow):
             if self._export_rankings_csv(output_dir):
                 exported_items.append("Rankings CSV")
         
-        if selections['all_charts_png']:
-            # Export both combined and separate when "Print all images to one PNG" is selected
-            if self._export_all_charts_png(output_dir):
-                exported_items.append("All Charts Combined PNG")
-            # Also export separately
-            if self._export_radar_charts_png(output_dir):
-                exported_items.append("Radar Charts PNG")
-            if self._export_tct_chart_png(output_dir):
-                exported_items.append("TCT Chart PNG")
-        else:
-            if selections['radar_png']:
+        # Check if any image exports are selected
+        has_image_exports = (selections['all_charts_png'] or 
+                            selections['radar_png'] or 
+                            selections['tct_png'])
+        
+        # Show loading dialog for image exports
+        loading = None
+        if has_image_exports:
+            loading = LoadingDialog(self, "Exporting images...")
+            loading.show()
+            QApplication.processEvents()
+        
+        try:
+            if selections['all_charts_png']:
+                # Export both combined and separate when "Print all images to one PNG" is selected
+                if loading:
+                    loading.setMessage("Exporting combined chart...")
+                    QApplication.processEvents()
+                if self._export_all_charts_png(output_dir):
+                    exported_items.append("All Charts Combined PNG")
+                # Also export separately
+                if loading:
+                    loading.setMessage("Exporting radar charts...")
+                    QApplication.processEvents()
                 if self._export_radar_charts_png(output_dir):
                     exported_items.append("Radar Charts PNG")
-            if selections['tct_png']:
+                if loading:
+                    loading.setMessage("Exporting TCT chart...")
+                    QApplication.processEvents()
                 if self._export_tct_chart_png(output_dir):
                     exported_items.append("TCT Chart PNG")
+            else:
+                if selections['radar_png']:
+                    if loading:
+                        loading.setMessage("Exporting radar charts...")
+                        QApplication.processEvents()
+                    if self._export_radar_charts_png(output_dir):
+                        exported_items.append("Radar Charts PNG")
+                if selections['tct_png']:
+                    if loading:
+                        loading.setMessage("Exporting TCT chart...")
+                        QApplication.processEvents()
+                    if self._export_tct_chart_png(output_dir):
+                        exported_items.append("TCT Chart PNG")
+        finally:
+            if loading:
+                loading.close()
+                QApplication.processEvents()
         
         if exported_items:
             QMessageBox.information(

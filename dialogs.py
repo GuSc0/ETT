@@ -12,10 +12,67 @@ from PyQt6.QtWidgets import (
     QMessageBox, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
     QHeaderView
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QTextDocument, QColor
 
 from state import state
+
+
+class LoadingDialog(QDialog):
+    """Loading dialog with animated spinner."""
+    
+    def __init__(self, parent: Optional[QWidget] = None, message: str = "Loading...") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Loading")
+        self.setModal(True)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowTitleHint)
+        self.setMinimumSize(250, 120)
+        self.setMaximumSize(250, 120)
+        
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(15)
+        
+        # Spinner label with rotating text
+        self.spinner_label = QLabel()
+        self.spinner_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spinner_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.spinner_label.setText(message)
+        layout.addWidget(self.spinner_label)
+        
+        # Animation for spinner
+        self.rotation = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._update_animation)
+        self.timer.start(100)  # Update every 100ms
+    
+    def _update_animation(self) -> None:
+        """Update animation frame."""
+        self.rotation = (self.rotation + 45) % 360
+        # Create rotating spinner characters
+        spinner_chars = ['|', '/', '-', '\\']
+        char_idx = (self.rotation // 90) % len(spinner_chars)
+        current_text = self.spinner_label.text()
+        # Extract message part (before spinner char)
+        if ' ' in current_text:
+            message_part = current_text.rsplit(' ', 1)[0]
+        else:
+            message_part = "Loading"
+        self.spinner_label.setText(f"{message_part} {spinner_chars[char_idx]}")
+    
+    def showEvent(self, event) -> None:
+        """Start animation when shown."""
+        super().showEvent(event)
+        self.timer.start()
+    
+    def hideEvent(self, event) -> None:
+        """Stop animation when hidden."""
+        super().hideEvent(event)
+        self.timer.stop()
+    
+    def setMessage(self, message: str) -> None:
+        """Update the loading message."""
+        self.spinner_label.setText(message)
 
 
 class MultiSelectDialog(QDialog):
