@@ -16,7 +16,8 @@ from state import state
 from analysis import (
     aggregate_by_groups,
     calculate_normalized_rankings_per_group,
-    generate_statistics_table
+    generate_statistics_table,
+    normalize_for_radar
 )
 from models import PARAMETER_OPTIONS
 
@@ -78,6 +79,7 @@ def _generate_tct_chart_pdf(
 
     try:
         tct_data = {}  # {group_name: {task_id: mean_value_seconds}}
+        tct_std_data = {}  # {group_name: {task_id: std_value_seconds}}
         tct_param = "Task Completion Time (TCT)"
 
         for group_id in selected_groups:
@@ -86,6 +88,7 @@ def _generate_tct_chart_pdf(
             group_data = aggregated_data[group_id]
             group_name = state.get_effective_group_names().get(group_id, group_id)
             tct_data[group_name] = {}
+            tct_std_data[group_name] = {}
             for task_id in selected_tasks:
                 if task_id not in group_data:
                     continue
@@ -94,9 +97,11 @@ def _generate_tct_chart_pdf(
                     continue
                 if tct_param in task_data:
                     mean_ms = task_data[tct_param].get("mean", 0)
+                    std_ms = task_data[tct_param].get("std", 0)
                     tct_data[group_name][task_id] = mean_ms / 1000.0
+                    tct_std_data[group_name][task_id] = std_ms / 1000.0
                 else:
-                    # Participant mode: compute mean from participants
+                    # Participant mode: compute mean and std from participants
                     vals = []
                     for k, v in task_data.items():
                         if k == "_group_stats" or not isinstance(v, dict):
@@ -104,7 +109,12 @@ def _generate_tct_chart_pdf(
                         if tct_param in v:
                             vals.append(v[tct_param].get("mean", 0))
                     if vals:
-                        tct_data[group_name][task_id] = float(np.mean(vals)) / 1000.0
+                        vals_seconds = [v / 1000.0 for v in vals]
+                        tct_data[group_name][task_id] = float(np.mean(vals_seconds))
+                        if len(vals_seconds) > 1:
+                            tct_std_data[group_name][task_id] = float(np.std(vals_seconds, ddof=1))
+                        else:
+                            tct_std_data[group_name][task_id] = 0.0
 
         if not tct_data:
             return None
@@ -121,8 +131,11 @@ def _generate_tct_chart_pdf(
         tasks = [state.format_task(tid) for tid in task_ids]
 
         group_values = {}
+        group_std_values = {}
         for group_name, task_data in tct_data.items():
             group_values[group_name] = [task_data.get(tid, 0) for tid in task_ids]
+            std_data = tct_std_data.get(group_name, {})
+            group_std_values[group_name] = [std_data.get(tid, 0) for tid in task_ids]
 
         fig, ax = plt.subplots(figsize=(10, 6))
         task_spacing = 1.15
@@ -131,7 +144,10 @@ def _generate_tct_chart_pdf(
         colors = plt.cm.tab10(np.linspace(0, 1, len(group_values)))
         for idx, (group_name, values) in enumerate(group_values.items()):
             offset = (idx - (len(group_values) - 1) / 2) * width
-            ax.bar(x + offset, values, width, label=group_name, alpha=0.8, color=colors[idx])
+            std_vals = group_std_values.get(group_name, [0] * len(values))
+            ax.bar(x + offset, values, width, yerr=std_vals, 
+                  label=group_name, alpha=0.8, color=colors[idx], 
+                  capsize=5, error_kw={'elinewidth': 1.5, 'capthick': 1.5})
 
         ax.set_xlabel("Tasks")
         ax.set_ylabel("Task Completion Time (seconds)")
@@ -177,46 +193,32 @@ def _generate_radar_chart_pdf(
         return None
 
     try:
-        # task_means[task_id][param] = mean value across all participants/groups
+        # Use normalize_for_radar() which applies baseline subtraction + min-max scaling
+        normalized_data = normalize_for_radar(aggregated_data, radar_parameters, df=state.df)
+        
+        if not normalized_data:
+            return None
+        
+        # Extract normalized values for plotting
         task_means: Dict[str, Dict[str, float]] = {}
         for task_id in selected_tasks:
-            task_means[task_id] = {p: [] for p in radar_parameters}
-
-        for group_id in selected_groups:
-            if group_id not in aggregated_data:
-                continue
-            group_data = aggregated_data[group_id]
-            for task_id in selected_tasks:
-                if task_id not in group_data:
-                    continue
-                task_data = group_data[task_id]
-                if not isinstance(task_data, dict):
-                    continue
-
-                for param in radar_parameters:
-                    vals = []
-                    if param in task_data and isinstance(task_data[param], dict):
-                        vals.append(task_data[param].get("mean", 0))
-                    if "_group_stats" in task_data and isinstance(task_data["_group_stats"], dict) and param in task_data["_group_stats"]:
-                        vals.append(task_data["_group_stats"][param].get("mean", 0))
-                    for k, v in task_data.items():
-                        if k == "_group_stats" or not isinstance(v, dict):
-                            continue
-                        if param in v and isinstance(v.get(param), dict):
-                            vals.append(v[param].get("mean", 0))
-                    if vals:
-                        task_means[task_id][param].extend(vals)
-
-        # Single mean per (task, param) and normalize 0-1 per parameter
+            task_means[task_id] = {}
+            for group_id in selected_groups:
+                if group_id in normalized_data and task_id in normalized_data[group_id]:
+                    for param in radar_parameters:
+                        if param in normalized_data[group_id][task_id]:
+                            if param not in task_means[task_id]:
+                                task_means[task_id][param] = []
+                            task_means[task_id][param].append(normalized_data[group_id][task_id][param])
+        
+        # Average across groups if multiple groups
         for task_id in task_means:
             for param in radar_parameters:
-                L = task_means[task_id][param]
-                task_means[task_id][param] = float(np.mean(L)) if L else 0.0
-
-        param_min_max: Dict[str, Tuple[float, float]] = {}
-        for param in radar_parameters:
-            values = [task_means[t][param] for t in selected_tasks if task_means[t][param]]
-            param_min_max[param] = (min(values), max(values)) if values else (0.0, 1.0)
+                if param in task_means[task_id]:
+                    L = task_means[task_id][param]
+                    task_means[task_id][param] = float(np.mean(L)) if L else 0.0
+                else:
+                    task_means[task_id][param] = 0.0
 
         try:
             from data_processor import _natural_sort_key
@@ -233,14 +235,10 @@ def _generate_radar_chart_pdf(
         for idx, task_id in enumerate(sorted_tasks):
             values = []
             for param in radar_parameters:
+                # Values are already normalized (0-1) from normalize_for_radar()
                 v = task_means[task_id][param]
-                lo, hi = param_min_max[param]
-                if hi > lo:
-                    v = (v - lo) / (hi - lo)
-                else:
-                    v = 0.5 if v else 0.0
                 values.append(v)
-            values += values[:1]
+            values += values[:1]  # Complete the circle
             task_label = state.format_task(task_id)
             ax.plot(angles, values, "o-", linewidth=2, label=task_label, color=colors[idx])
             ax.fill(angles, values, alpha=0.2, color=colors[idx])
@@ -265,7 +263,7 @@ def _generate_radar_chart_pdf(
         ax.set_xticks(angles[:-1])
         ax.set_xticklabels(short_labels, fontsize=9)
         ax.set_ylim(0, 1)
-        ax.set_title("Mean values of all participants per task (normalized 0–1)", fontsize=11, pad=20)
+        ax.set_title("Mean values of all participants per task (baseline-subtracted, normalized 0–1)", fontsize=11, pad=20)
         ax.legend(loc="upper left", bbox_to_anchor=(1.15, 1), fontsize=8)
         ax.grid(True)
         fig.tight_layout()

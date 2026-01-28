@@ -902,12 +902,261 @@ def calculate_rankings(
     return result
 
 
+def _calculate_participant_baselines(
+    df: pd.DataFrame,
+    parameters: List[str],
+    baseline_tasks: List[str] = None
+) -> Dict[str, Dict[str, float]]:
+    """
+    Calculate baseline values per participant per parameter from Task 0 (or 0a/0b).
+    Matches notebook approach: baseline = mean of Task 0 per participant.
+    
+    Returns: {participant_id: {parameter: baseline_value}}
+    """
+    if baseline_tasks is None:
+        # Default: try Task 0, then 0a, then 0b (like notebook uses Task 0)
+        baseline_tasks = ["0", "0a", "0b"]
+    
+    baselines: Dict[str, Dict[str, float]] = {}
+    
+    # Get all participants
+    if 'Participant' not in df.columns:
+        return baselines
+    
+    participants = df['Participant'].unique()
+    
+    for participant in participants:
+        baselines[participant] = {}
+        
+        # Find baseline task data for this participant
+        baseline_data = None
+        baseline_task = None
+        for task in baseline_tasks:
+            task_data = df[(df['Participant'] == participant) & 
+                          (df['TOI'].str.endswith(f'_{task}', na=False))]
+            if not task_data.empty:
+                baseline_data = task_data
+                baseline_task = task
+                break
+        
+        if baseline_data is None or baseline_data.empty:
+            # No baseline data found for this participant
+            continue
+        
+        # Calculate baseline for each parameter
+        for parameter in parameters:
+            column_name = PARAMETER_COLUMN_MAP.get(parameter)
+            
+            if column_name == "calculated":
+                # Special handling for TCT
+                if parameter == "Task Completion Time (TCT)" and baseline_task is not None:
+                    tct = calculate_tct(df, participant, baseline_task)
+                    if tct is not None:
+                        baselines[participant][parameter] = tct
+                # Standard Deviation of TCT is not calculated per participant
+                continue
+            
+            if column_name not in baseline_data.columns:
+                continue
+            
+            # Get values and calculate mean
+            values = _convert_numeric_column(baseline_data[column_name])
+            values = values.dropna()
+            
+            if not values.empty:
+                baselines[participant][parameter] = float(np.mean(values.values))
+    
+    return baselines
+
+
 def normalize_for_radar(
+    aggregated_data: Dict[str, Dict],
+    parameters: List[str],
+    df: Optional[pd.DataFrame] = None
+) -> Dict[str, Dict[str, Dict[str, float]]]:
+    """
+    Normalize parameter values using baseline subtraction + min-max scaling (0-1).
+    Matches notebook approach: first subtract participant baseline (Task 0), then scale to 0-1.
+    
+    Args:
+        aggregated_data: Nested dict with aggregated data
+        parameters: List of parameter names to normalize
+        df: Optional raw dataframe for baseline calculation. If None, uses state.df.
+    
+    Returns nested dict: {group_id: {task_id: {parameter: normalized_value}}}
+    """
+    # Get raw dataframe for baseline calculation
+    if df is None:
+        df = state.df
+    
+    if df is None or df.empty:
+        # Fallback to old behavior if no raw data available
+        return _normalize_for_radar_legacy(aggregated_data, parameters)
+    
+    # Step 1: Calculate baselines per participant per parameter
+    baselines = _calculate_participant_baselines(df, parameters)
+    
+    # Step 2: Apply baseline subtraction and collect baseline-subtracted values
+    baseline_subtracted_values: Dict[str, List[float]] = {param: [] for param in parameters}
+    
+    for group_id, group_data in aggregated_data.items():
+        for task_id, task_data in group_data.items():
+            if not isinstance(task_data, dict):
+                continue
+            
+            # Check if it's individual participant mode
+            is_individual = any(
+                isinstance(k, str) and isinstance(v, dict) and 
+                any(isinstance(vv, dict) for vv in v.values() if isinstance(vv, dict))
+                for k, v in task_data.items() if k != "_group_stats"
+            )
+            
+            if is_individual:
+                # Individual participant mode: subtract each participant's baseline
+                for participant, participant_data in task_data.items():
+                    if participant == "_group_stats" or not isinstance(participant_data, dict):
+                        continue
+                    
+                    participant_baseline = baselines.get(participant, {})
+                    
+                    for parameter in parameters:
+                        if parameter in participant_data:
+                            value = participant_data[parameter].get('mean', 0)
+                            baseline = participant_baseline.get(parameter, 0)
+                            baseline_subtracted = value - baseline
+                            baseline_subtracted_values[parameter].append(baseline_subtracted)
+                        elif "_group_stats" in task_data and parameter in task_data["_group_stats"]:
+                            # Group-level parameter (e.g., Standard Deviation of TCT)
+                            # For group-level stats, we can't subtract individual baselines
+                            # Use the value as-is (it's already a group statistic)
+                            value = task_data["_group_stats"][parameter].get('mean', 0)
+                            baseline_subtracted_values[parameter].append(value)
+            else:
+                # Group mean mode: need to get participants from effective groups
+                effective_groups = state.get_effective_participant_groups()
+                participants = effective_groups.get(group_id, [])
+                
+                # For group mean, calculate mean of baseline-subtracted values
+                # This is equivalent to: mean(values) - mean(baselines)
+                for parameter in parameters:
+                    if parameter in task_data:
+                        value = task_data[parameter].get('mean', 0)
+                        # Calculate mean baseline for this group
+                        group_baselines = [baselines.get(p, {}).get(parameter, 0) 
+                                         for p in participants]
+                        mean_baseline = float(np.mean(group_baselines)) if group_baselines else 0
+                        baseline_subtracted = value - mean_baseline
+                        baseline_subtracted_values[parameter].append(baseline_subtracted)
+                    elif "_group_stats" in task_data and parameter in task_data["_group_stats"]:
+                        # Group-level parameter
+                        value = task_data["_group_stats"][parameter].get('mean', 0)
+                        baseline_subtracted_values[parameter].append(value)
+    
+    # Step 3: Calculate min/max for baseline-subtracted values
+    param_min_max: Dict[str, Tuple[float, float]] = {}
+    for parameter in parameters:
+        values = baseline_subtracted_values[parameter]
+        if values:
+            param_min_max[parameter] = (min(values), max(values))
+        else:
+            param_min_max[parameter] = (0.0, 1.0)  # Default to avoid division by zero
+    
+    # Step 4: Normalize baseline-subtracted values to 0-1 scale
+    normalized = {}
+    
+    for group_id, group_data in aggregated_data.items():
+        normalized[group_id] = {}
+        
+        for task_id, task_data in group_data.items():
+            normalized[group_id][task_id] = {}
+            
+            # Initialize all parameters to 0.0
+            for parameter in parameters:
+                normalized[group_id][task_id][parameter] = 0.0
+            
+            if not isinstance(task_data, dict):
+                continue
+            
+            # Check if it's individual participant mode
+            is_individual = any(
+                isinstance(k, str) and isinstance(v, dict) and 
+                any(isinstance(vv, dict) for vv in v.values() if isinstance(vv, dict))
+                for k, v in task_data.items() if k != "_group_stats"
+            )
+            
+            if is_individual:
+                # Individual participant mode: subtract baseline, then normalize
+                participant_values = {}
+                for participant, participant_data in task_data.items():
+                    if participant == "_group_stats":
+                        continue
+                    if not isinstance(participant_data, dict):
+                        continue
+                    
+                    participant_baseline = baselines.get(participant, {})
+                    
+                    for parameter in parameters:
+                        if parameter in participant_data:
+                            value = participant_data[parameter].get('mean', 0)
+                            baseline = participant_baseline.get(parameter, 0)
+                            baseline_subtracted = value - baseline
+                            
+                            if parameter not in participant_values:
+                                participant_values[parameter] = []
+                            participant_values[parameter].append(baseline_subtracted)
+                
+                # Calculate group mean for each parameter (mean of baseline-subtracted values)
+                for parameter in parameters:
+                    value = None
+                    # Check _group_stats first (for Standard Deviation of TCT)
+                    if "_group_stats" in task_data and parameter in task_data["_group_stats"]:
+                        value = task_data["_group_stats"][parameter].get('mean', 0)
+                    elif parameter in participant_values and participant_values[parameter]:
+                        value = float(np.mean(participant_values[parameter]))
+                    
+                    if value is not None:
+                        min_val, max_val = param_min_max[parameter]
+                        if max_val > min_val:
+                            normalized_value = (value - min_val) / (max_val - min_val)
+                        else:
+                            normalized_value = 0.5 if value > 0 else 0.0
+                        normalized[group_id][task_id][parameter] = normalized_value
+            else:
+                # Group mean mode: subtract mean baseline, then normalize
+                effective_groups = state.get_effective_participant_groups()
+                participants = effective_groups.get(group_id, [])
+                
+                for parameter in parameters:
+                    value = None
+                    if parameter in task_data:
+                        value = task_data[parameter].get('mean', 0)
+                        # Calculate mean baseline for this group
+                        group_baselines = [baselines.get(p, {}).get(parameter, 0) 
+                                         for p in participants]
+                        mean_baseline = float(np.mean(group_baselines)) if group_baselines else 0
+                        baseline_subtracted = value - mean_baseline
+                        value = baseline_subtracted
+                    elif "_group_stats" in task_data and parameter in task_data["_group_stats"]:
+                        value = task_data["_group_stats"][parameter].get('mean', 0)
+                    
+                    if value is not None:
+                        min_val, max_val = param_min_max[parameter]
+                        if max_val > min_val:
+                            normalized_value = (value - min_val) / (max_val - min_val)
+                        else:
+                            normalized_value = 0.5 if value > 0 else 0.0
+                        normalized[group_id][task_id][parameter] = normalized_value
+    
+    return normalized
+
+
+def _normalize_for_radar_legacy(
     aggregated_data: Dict[str, Dict],
     parameters: List[str]
 ) -> Dict[str, Dict[str, Dict[str, float]]]:
     """
-    Normalize parameter values to 0-1 scale using min-max normalization.
+    Legacy min-max normalization (without baseline subtraction).
+    Used as fallback when raw dataframe is not available.
     
     Returns nested dict: {group_id: {task_id: {parameter: normalized_value}}}
     """

@@ -676,8 +676,9 @@ class ResultsWindow(QMainWindow):
             self.tabs.addTab(radar_widget, "Radar Chart")
             return
         
-        # Normalize data for radar chart
-        normalized_data = normalize_for_radar(self.aggregated_data, radar_parameters)
+        # Normalize data for radar chart (with baseline subtraction, like notebook)
+        from state import state
+        normalized_data = normalize_for_radar(self.aggregated_data, radar_parameters, df=state.df)
         
         if not normalized_data:
             radar_layout.addWidget(QLabel("No data available for radar chart."))
@@ -700,8 +701,10 @@ class ResultsWindow(QMainWindow):
         
         # Add explanation label for radar chart normalization
         explanation_label = QLabel(
-            "Values are normalized to 0-1 scale using min-max normalization "
-            "(0 = minimum value, 1 = maximum value across all tasks and groups)."
+            "Values are normalized using baseline subtraction + min-max scaling (0-1). "
+            "First, each participant's baseline (Task 0) is subtracted from their values. "
+            "Then, baseline-subtracted values are scaled to 0-1 (0 = minimum deviation from baseline, "
+            "1 = maximum deviation from baseline across all tasks and groups)."
         )
         explanation_label.setWordWrap(True)
         explanation_label.setStyleSheet("padding: 8px; background-color: #f0f0f0; border-radius: 4px; font-size: 10pt; color: #666;")
@@ -726,12 +729,12 @@ class ResultsWindow(QMainWindow):
         
         num_groups = len(self.selected_groups)
         if num_groups > 0:
-            # Use 2 columns for 3+ groups to prevent horizontal crowding
-            agg_cols = 2 if num_groups >= 3 else min(3, num_groups)
-            agg_rows = (num_groups + agg_cols - 1) // agg_cols
-            # Increase figure width when 3+ groups for better spacing
-            fig_width = 20 if num_groups >= 3 else 14
-            fig_height = 6 * agg_rows
+            # Layout: all groups side-by-side (1 row, num_groups columns)
+            agg_cols = num_groups
+            agg_rows = 1
+            # Calculate figure size: wider for more groups, consistent height
+            fig_width = 6 * num_groups + 2  # Extra space for legend on left
+            fig_height = 7
             agg_fig = Figure(figsize=(fig_width, fig_height))
             agg_canvas = FigureCanvas(agg_fig)
             # Set minimum height and size policy for aggregated view
@@ -744,6 +747,12 @@ class ResultsWindow(QMainWindow):
             agg_canvas.installEventFilter(wheel_filter)
             agg_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             
+            # Use gridspec for better control - create once before loop
+            from matplotlib import gridspec
+            gs = gridspec.GridSpec(1, num_groups + 1, figure=agg_fig, 
+                                 width_ratios=[0.15] + [1] * num_groups,
+                                 wspace=0.3, hspace=0.2)
+            
             # Collect all labels for shared legend (only from first group since all groups have same tasks)
             shared_labels = []
             shared_handles = []
@@ -752,7 +761,7 @@ class ResultsWindow(QMainWindow):
                 if group_id not in normalized_data:
                     continue
                 
-                ax = agg_fig.add_subplot(agg_rows, agg_cols, idx + 1, projection='polar')
+                ax = agg_fig.add_subplot(gs[0, idx + 1], projection='polar')
                 group_data = normalized_data[group_id]
                 group_name = state.get_effective_group_names().get(group_id, group_id)
                 
@@ -819,18 +828,20 @@ class ResultsWindow(QMainWindow):
                 ax.set_ylim(0, 1)
                 ax.set_title(group_name, fontsize=12, fontweight='bold', pad=35)
                 ax.grid(True)
-                # Don't add individual legend - will use shared legend below
+                # Don't add individual legend - will use shared legend on the left
             
-            # Add shared legend below all charts (only if we have labels)
+            # Add shared legend vertically to the left of the first chart (only if we have labels)
             if shared_handles:
-                # Create a single shared legend at the bottom, placed further below
+                # Create a single shared legend on the left side, vertically oriented
+                legend_ax = agg_fig.add_subplot(gs[0, 0])
+                legend_ax.axis('off')  # Hide axes
                 agg_fig.legend(shared_handles, shared_labels, 
-                              loc='lower center', bbox_to_anchor=(0.5, -0.12), 
-                              ncol=min(len(shared_labels), 6), fontsize=9, frameon=True)
+                              loc='center left', bbox_to_anchor=(0, 0.5),
+                              fontsize=9, frameon=True, ncol=1)
             
             # Use subplots_adjust to add explicit spacing between subplots
-            agg_fig.subplots_adjust(hspace=0.6, wspace=0.6, top=0.95, bottom=0.15)
-            agg_fig.tight_layout(pad=6.0)  # Significantly increased padding for better spacing
+            agg_fig.subplots_adjust(left=0.12, right=0.98, top=0.95, bottom=0.1, wspace=0.3)
+            agg_fig.tight_layout(pad=2.0, rect=[0.12, 0.1, 0.98, 0.95])  # Leave space for legend on left
             scroll_layout.addWidget(agg_canvas)
             # Store aggregated canvas for export (None = aggregated view, not task-specific)
             self.radar_canvases.append((agg_canvas, None))
@@ -920,15 +931,23 @@ class ResultsWindow(QMainWindow):
                     ind_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
                     ax = ind_fig.add_subplot(111, projection='polar')
                     
-                    # Collect all participant values for this group-task to normalize together
+                    # Calculate baselines for all participants
+                    from analysis import _calculate_participant_baselines
+                    baselines = _calculate_participant_baselines(state.df, radar_parameters) if state.df is not None else {}
+                    
+                    # Collect baseline-subtracted values for this group-task to normalize together
                     all_participant_values_for_task = {}
                     for p_id in participants:
                         if p_id in task_data and isinstance(task_data[p_id], dict):
+                            participant_baseline = baselines.get(p_id, {})
                             for param in radar_parameters:
                                 if param in task_data[p_id]:
                                     if param not in all_participant_values_for_task:
                                         all_participant_values_for_task[param] = []
-                                    all_participant_values_for_task[param].append(task_data[p_id][param].get('mean', 0))
+                                    value = task_data[p_id][param].get('mean', 0)
+                                    baseline = participant_baseline.get(param, 0)
+                                    baseline_subtracted = value - baseline
+                                    all_participant_values_for_task[param].append(baseline_subtracted)
                     
                     # Plot each participant as a separate line
                     color_map = plt.cm.get_cmap('tab20', len(participants))
@@ -937,16 +956,20 @@ class ResultsWindow(QMainWindow):
                             continue
                         
                         participant_data = task_data[participant_id]
+                        participant_baseline = baselines.get(participant_id, {})
                         
-                        # Extract and normalize values for this participant
+                        # Extract and normalize values for this participant (with baseline subtraction)
                         values = []
                         for param in radar_parameters:
                             value = None
                             if param in participant_data:
                                 value = participant_data[param].get('mean', 0)
+                                baseline = participant_baseline.get(param, 0)
+                                baseline_subtracted = value - baseline
+                                value = baseline_subtracted
                             
                             if value is not None and param in all_participant_values_for_task:
-                                # Normalize using min/max across all participants for this task
+                                # Normalize using min/max across all participants for this task (baseline-subtracted values)
                                 param_values = all_participant_values_for_task[param]
                                 if param_values:
                                     min_val = min(param_values)
@@ -1134,6 +1157,7 @@ class ResultsWindow(QMainWindow):
         # Extract TCT data
         # Store with task_id as key for proper sorting, then format for display
         tct_data = {}  # {group_name: {task_id: mean_value}}
+        tct_std_data = {}  # {group_name: {task_id: std_value}}
         tct_participant_data = {}  # {group_name: {task_id: {participant: value}}}
         
         for group_id in self.selected_groups:
@@ -1143,6 +1167,7 @@ class ResultsWindow(QMainWindow):
             group_data = self.aggregated_data[group_id]
             group_name = state.get_effective_group_names().get(group_id, group_id)
             tct_data[group_name] = {}
+            tct_std_data[group_name] = {}
             tct_participant_data[group_name] = {}
             
             for task_id in self.selected_tasks:
@@ -1156,8 +1181,10 @@ class ResultsWindow(QMainWindow):
                     # Group mean mode
                     if tct_param in task_data:
                         tct_value = task_data[tct_param].get('mean', 0)
+                        tct_std = task_data[tct_param].get('std', 0)
                         # Convert from milliseconds to seconds
                         tct_data[group_name][task_id] = tct_value / 1000.0
+                        tct_std_data[group_name][task_id] = tct_std / 1000.0
                     # Individual participant mode
                     elif any(isinstance(v, dict) for v in task_data.values() if isinstance(v, dict)):
                         participant_values_dict = {}
@@ -1173,9 +1200,13 @@ class ResultsWindow(QMainWindow):
                         
                         if participant_values_dict:
                             tct_participant_data[group_name][task_id] = participant_values_dict
-                            # Also store mean for group mean display
+                            # Also store mean and std for group mean display
                             if tct_values_list:
                                 tct_data[group_name][task_id] = float(np.mean(tct_values_list))
+                                if len(tct_values_list) > 1:
+                                    tct_std_data[group_name][task_id] = float(np.std(tct_values_list, ddof=1))
+                                else:
+                                    tct_std_data[group_name][task_id] = 0.0
         
         if not tct_data and not tct_participant_data:
             tct_layout.addWidget(QLabel("No TCT data available."))
@@ -1250,14 +1281,24 @@ class ResultsWindow(QMainWindow):
                         else:
                             mean_values.append(0)
                     
+                    # Get std values for error bars
+                    std_values = []
+                    for task_id in task_ids:
+                        if group_name in tct_std_data and task_id in tct_std_data[group_name]:
+                            std_values.append(tct_std_data[group_name][task_id])
+                        else:
+                            std_values.append(0)
+                    
                     # Position group mean bar - calculate offset so bars are adjacent
                     # Bars fill space from x-0.5 to x+0.5, so offset = (bar_idx - (num_bars-1)/2) * width
                     offset = (bar_idx - (num_bars - 1) / 2) * width
                     # Use thicker bar for group mean (width * 1.2) and different style
                     ax.bar(x + offset, mean_values, width * 1.2, 
+                          yerr=std_values,
                           label=f"{group_name} (Mean)", 
                           alpha=0.9, color=colors[bar_idx % len(colors)], 
-                          edgecolor='black', linewidth=2)
+                          edgecolor='black', linewidth=2,
+                          capsize=5, error_kw={'elinewidth': 1.5, 'capthick': 1.5})
                     bar_idx += 1
                 
                 # Show individual participants
@@ -1307,9 +1348,15 @@ class ResultsWindow(QMainWindow):
             # Use distinct colors for each group
             group_colors = plt.cm.tab10(np.linspace(0, 1, len(group_values)))
             for idx, (group_name, values) in enumerate(group_values.items()):
+                # Get std values for error bars
+                std_data = tct_std_data.get(group_name, {})
+                std_values = [std_data.get(tid, 0) for tid in task_ids]
+                
                 # Calculate offset so bars are adjacent (no gaps)
                 offset = (idx - (len(group_values) - 1) / 2) * width
-                ax.bar(x + offset, values, width, label=group_name, alpha=0.8, color=group_colors[idx])
+                ax.bar(x + offset, values, width, yerr=std_values,
+                      label=group_name, alpha=0.8, color=group_colors[idx],
+                      capsize=5, error_kw={'elinewidth': 1.5, 'capthick': 1.5})
         
         ax.set_xlabel('Tasks')
         ax.set_ylabel('Task Completion Time (seconds)')
