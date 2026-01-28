@@ -139,6 +139,72 @@ def generate_executive_summary(
     
     lines.append("")
     
+    # Narrative summary (universal formulations filled with actual values)
+    lines.append("NARRATIVE SUMMARY")
+    lines.append("-" * 80)
+    tct_name = "Task Completion Time (TCT)"
+    std_tct_name = "Standard Deviation of TCT"
+    params_for_variation = [p for p in active_parameters if p != std_tct_name]
+    
+    # Longest / shortest TCT (TCT is in ms in overall_data)
+    if overall_data and any(tct_name in pdata for pdata in overall_data.values()):
+        task_tct_means = [
+            (tid, overall_data[tid][tct_name]["mean"])
+            for tid in overall_data
+            if tct_name in overall_data[tid]
+        ]
+        if task_tct_means:
+            longest_tid, tct_ms_max = max(task_tct_means, key=lambda x: x[1])
+            shortest_tid, tct_ms_min = min(task_tct_means, key=lambda x: x[1])
+            longest_label = state.format_task(longest_tid)
+            shortest_label = state.format_task(shortest_tid)
+            lines.append(
+                f"Task {longest_label} had the longest completion time ({tct_ms_max / 1000.0:.1f} s), "
+                "consistent with its high cognitive demand."
+            )
+            if longest_tid != shortest_tid:
+                lines.append(
+                    f"Task {shortest_label} had the shortest completion time ({tct_ms_min / 1000.0:.1f} s), "
+                    "indicating relatively low cognitive demand."
+                )
+            lines.append(
+                f"The largest difference in completion time was between {longest_label} (most demanding) "
+                f"and {shortest_label} (least demanding)."
+            )
+    else:
+        lines.append("Task completion time data not available for narrative summary.")
+    
+    # Most varied parameter across tasks
+    if overall_data and params_for_variation:
+        best_param = None
+        best_range = -1.0
+        task_high = task_low = None
+        for param in params_for_variation:
+            means = [
+                (tid, overall_data[tid][param]["mean"])
+                for tid in overall_data
+                if param in overall_data[tid]
+            ]
+            if len(means) < 2:
+                continue
+            vals = [m[1] for m in means]
+            r = max(vals) - min(vals)
+            if r > best_range:
+                best_range = r
+                best_param = param
+                task_high = max(means, key=lambda x: x[1])[0]
+                task_low = min(means, key=lambda x: x[1])[0]
+        if best_param is not None:
+            lines.append(
+                f"The metric that varied most across tasks was {best_param}, with the highest value "
+                f"in {state.format_task(task_high)} and the lowest in {state.format_task(task_low)}."
+            )
+    
+    lines.append(
+        f"Analysis included {len(selected_groups)} group(s); statistics are aggregated across all participants."
+    )
+    lines.append("")
+    
     # Overall statistics summary (across all tasks and groups)
     lines.append("OVERALL STATISTICS SUMMARY")
     lines.append("-" * 80)

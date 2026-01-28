@@ -460,6 +460,111 @@ def generate_latex_summary(
     else:
         highest_load_task = "Unable to determine"
     
+    # Build overall_data (task -> parameter -> mean/std/...) for narrative placeholders
+    aggregated_all_data = {}
+    for group_id, group_data in aggregated_data.items():
+        for task_id, task_data in group_data.items():
+            if task_id not in aggregated_all_data:
+                aggregated_all_data[task_id] = {}
+            if isinstance(task_data, dict):
+                is_individual = any(
+                    isinstance(k, str) and isinstance(v, dict) and
+                    any(isinstance(vv, dict) for vv in (v.values() if isinstance(v, dict) else []))
+                    for k, v in task_data.items() if k != "_group_stats"
+                )
+                if is_individual:
+                    for participant, participant_data in task_data.items():
+                        if participant == "_group_stats" or not isinstance(participant_data, dict):
+                            continue
+                        for parameter, metrics in participant_data.items():
+                            if isinstance(metrics, dict) and "mean" in metrics:
+                                if parameter not in aggregated_all_data[task_id]:
+                                    aggregated_all_data[task_id][parameter] = []
+                                aggregated_all_data[task_id][parameter].append(metrics["mean"])
+                else:
+                    for parameter, metrics in task_data.items():
+                        if parameter == "_group_stats" or not isinstance(metrics, dict) or "mean" not in metrics:
+                            continue
+                        if parameter not in aggregated_all_data[task_id]:
+                            aggregated_all_data[task_id][parameter] = []
+                        aggregated_all_data[task_id][parameter].append(metrics["mean"])
+    overall_data = {}
+    for task_id, task_params in aggregated_all_data.items():
+        overall_data[task_id] = {}
+        for parameter, values in task_params.items():
+            if values:
+                overall_data[task_id][parameter] = {
+                    "mean": float(np.mean(values)),
+                    "std": float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
+                    "min": float(np.min(values)),
+                    "max": float(np.max(values)),
+                }
+    
+    # Narrative placeholders (with fallbacks and LaTeX escaping)
+    def _safe(s: str, fallback: str = "Not applicable") -> str:
+        return latex_escape(s) if (s and s.strip()) else fallback
+    
+    if hardest_rows:
+        most_demanding_task = _safe(hardest_rows[0]["task"])
+        most_demanding_reasons = _safe(hardest_rows[0]["reason"])
+        hardest_task_label = _safe(hardest_rows[0]["task"])
+    else:
+        most_demanding_task = most_demanding_reasons = hardest_task_label = "Not applicable"
+    
+    if easiest_rows:
+        easiest_task = _safe(easiest_rows[0]["task"])
+        easiest_reasons = _safe(easiest_rows[0]["reason"])
+        easiest_task_label = _safe(easiest_rows[0]["task"])
+    else:
+        easiest_task = easiest_reasons = easiest_task_label = "Not applicable"
+    
+    n_groups = str(len(selected_groups))
+    consistent_hardest_task = hardest_task_label
+    
+    # Most varied parameter across tasks (largest range in mean values)
+    tct_name = "Task Completion Time (TCT)"
+    std_tct_name = "Standard Deviation of TCT"
+    params_for_variation = [p for p in active_parameters if p != std_tct_name]
+    most_varied_parameter = "Not applicable"
+    most_varied_task_high = "Not applicable"
+    most_varied_task_low = "Not applicable"
+    if overall_data and params_for_variation:
+        best_param = None
+        best_range = -1.0
+        task_high = task_low = None
+        for param in params_for_variation:
+            means = []
+            for tid, pdata in overall_data.items():
+                if param in pdata:
+                    means.append((tid, pdata[param]["mean"]))
+            if len(means) < 2:
+                continue
+            vals = [m[1] for m in means]
+            r = max(vals) - min(vals)
+            if r > best_range:
+                best_range = r
+                best_param = param
+                task_high = max(means, key=lambda x: x[1])[0]
+                task_low = min(means, key=lambda x: x[1])[0]
+        if best_param is not None:
+            most_varied_parameter = _safe(best_param)
+            most_varied_task_high = _safe(state.format_task(task_high))
+            most_varied_task_low = _safe(state.format_task(task_low))
+    
+    # Longest TCT task (mean TCT in ms -> seconds)
+    longest_tct_task = "Not applicable"
+    longest_tct_seconds = "—"
+    if tct_name in (p for tasks in overall_data.values() for p in tasks):
+        task_tct_means = [
+            (tid, overall_data[tid][tct_name]["mean"])
+            for tid in overall_data
+            if tct_name in overall_data[tid]
+        ]
+        if task_tct_means:
+            longest_tid, tct_ms = max(task_tct_means, key=lambda x: x[1])
+            longest_tct_task = _safe(state.format_task(longest_tid))
+            longest_tct_seconds = f"{tct_ms / 1000.0:.1f}"
+    
     # Count participants
     num_participants = 0
     if state.df is not None:
@@ -503,7 +608,20 @@ def generate_latex_summary(
         "data_source": df_path if df_path else "TSV file",
         "groups": ", ".join(group_name_list),
         "tasks": f"{len(selected_tasks)} tasks detected",
-        "ranking_rule": "Normalized mean rank across weighted parameters"
+        "ranking_rule": "Normalized mean rank across weighted parameters",
+        "most_demanding_task": most_demanding_task,
+        "most_demanding_reasons": most_demanding_reasons,
+        "easiest_task": easiest_task,
+        "easiest_reasons": easiest_reasons,
+        "hardest_task_label": hardest_task_label,
+        "easiest_task_label": easiest_task_label,
+        "n_groups": n_groups,
+        "consistent_hardest_task": consistent_hardest_task,
+        "most_varied_parameter": most_varied_parameter,
+        "most_varied_task_high": most_varied_task_high,
+        "most_varied_task_low": most_varied_task_low,
+        "longest_tct_task": longest_tct_task,
+        "longest_tct_seconds": longest_tct_seconds,
     }
     
     # Read template
