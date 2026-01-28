@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
 import pandas as pd
+import numpy as np
 
 from state import state
 from analysis import (
@@ -22,8 +23,8 @@ from models import PARAMETER_OPTIONS
 
 BASE_DIR = Path(__file__).parent
 TEMPLATE = BASE_DIR / "executive_summary_template.tex"
-OUTPUT_DIR = BASE_DIR / "output"
-OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
+OUTPUT_BASE = BASE_DIR / "output"
+OUTPUT_BASE.mkdir(exist_ok=True, parents=True)
 
 
 def latex_escape(s: str) -> str:
@@ -56,6 +57,97 @@ def render_rows(rows: List[Dict]) -> str:
         f"{latex_escape(r['outliers'])} \\\\"
         for r in rows
     )
+
+
+def _generate_tct_chart_pdf(
+    aggregated_data: Dict,
+    selected_groups: List[str],
+    selected_tasks: List[str],
+    output_dir: Path,
+) -> Optional[str]:
+    """
+    Generate TCT (Task Completion Time) bar chart as PDF in output_dir.
+    Returns filename (e.g. 'tct_chart.pdf') if created, else None.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+
+    try:
+        tct_data = {}  # {group_name: {task_id: mean_value_seconds}}
+        tct_param = "Task Completion Time (TCT)"
+
+        for group_id in selected_groups:
+            if group_id not in aggregated_data:
+                continue
+            group_data = aggregated_data[group_id]
+            group_name = state.get_effective_group_names().get(group_id, group_id)
+            tct_data[group_name] = {}
+            for task_id in selected_tasks:
+                if task_id not in group_data:
+                    continue
+                task_data = group_data[task_id]
+                if not isinstance(task_data, dict):
+                    continue
+                if tct_param in task_data:
+                    mean_ms = task_data[tct_param].get("mean", 0)
+                    tct_data[group_name][task_id] = mean_ms / 1000.0
+                else:
+                    # Participant mode: compute mean from participants
+                    vals = []
+                    for k, v in task_data.items():
+                        if k == "_group_stats" or not isinstance(v, dict):
+                            continue
+                        if tct_param in v:
+                            vals.append(v[tct_param].get("mean", 0))
+                    if vals:
+                        tct_data[group_name][task_id] = float(np.mean(vals)) / 1000.0
+
+        if not tct_data:
+            return None
+
+        try:
+            from data_processor import _natural_sort_key
+        except ImportError:
+            _natural_sort_key = lambda x: (str(x).isdigit(), str(x))
+
+        all_task_ids = set()
+        for group_data in tct_data.values():
+            all_task_ids.update(group_data.keys())
+        task_ids = sorted(all_task_ids, key=_natural_sort_key)
+        tasks = [state.format_task(tid) for tid in task_ids]
+
+        group_values = {}
+        for group_name, task_data in tct_data.items():
+            group_values[group_name] = [task_data.get(tid, 0) for tid in task_ids]
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        task_spacing = 1.15
+        x = np.arange(len(tasks)) * task_spacing
+        width = 1.0 / len(group_values) if group_values else 0.8
+        colors = plt.cm.tab10(np.linspace(0, 1, len(group_values)))
+        for idx, (group_name, values) in enumerate(group_values.items()):
+            offset = (idx - (len(group_values) - 1) / 2) * width
+            ax.bar(x + offset, values, width, label=group_name, alpha=0.8, color=colors[idx])
+
+        ax.set_xlabel("Tasks")
+        ax.set_ylabel("Task Completion Time (seconds)")
+        ax.set_title("Task Completion Time by Group and Task")
+        ax.set_xticks(x)
+        ax.set_xticklabels(tasks, rotation=45, ha="right")
+        ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", fontsize=8)
+        ax.grid(True, alpha=0.3, axis="y")
+        fig.tight_layout()
+
+        pdf_path = output_dir / "tct_chart.pdf"
+        fig.savefig(pdf_path, format="pdf", bbox_inches="tight")
+        plt.close(fig)
+        return "tct_chart.pdf"
+    except Exception:
+        return None
 
 
 def find_pdflatex() -> Optional[str]:
@@ -133,6 +225,16 @@ def generate_latex_summary(
     # Validate rankings data
     if not group_rankings:
         raise ValueError("No rankings data calculated. Check that groups and tasks have valid data.")
+
+    # Create dated output folder: "exec summary - YYYY-MM-DD_HH-MM-SS" (like images export)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    output_dir = OUTPUT_BASE / f"exec summary - {timestamp}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate TCT chart PDF before LaTeX so it can be included in the PDF
+    tct_filename = _generate_tct_chart_pdf(
+        aggregated_data, selected_groups, selected_tasks, output_dir
+    )
     
     # Determine hardest and easiest tasks (aggregate across groups)
     all_task_ranks = {}  # task_id -> list of overall ranks
@@ -258,6 +360,7 @@ def generate_latex_summary(
         ),
         "boxplot_path": "boxplot_tasks.pdf",  # Optional - will be skipped if file doesn't exist
         "radar_path": "radar_tasks.pdf",  # Optional - will be skipped if file doesn't exist
+        "tct_path": tct_filename or ".no-tct-chart",  # TCT chart PDF generated above; .no-tct-chart never exists
         "consistency_text": (
             f"Analysis includes {len(selected_groups)} group(s) with {num_participants} total participants. "
             f"Rankings are based on normalized values across {len(active_parameters)} parameter(s)."
@@ -281,15 +384,15 @@ def generate_latex_summary(
         placeholder = f"{{{{{key}}}}}"
         tex = tex.replace(placeholder, str(value))
     
-    # Write LaTeX file
-    tex_path = OUTPUT_DIR / "executive_summary.tex"
+    # Write LaTeX file into dated folder
+    tex_path = output_dir / "executive_summary.tex"
     tex_path.write_text(tex, encoding="utf-8")
     
-    # Compile to PDF
+    # Compile to PDF in same folder
     try:
         result = subprocess.run(
-            [pdflatex, "-interaction=nonstopmode", "-output-directory", str(OUTPUT_DIR), str(tex_path)],
-            cwd=OUTPUT_DIR,
+            [pdflatex, "-interaction=nonstopmode", "-output-directory", str(output_dir), str(tex_path)],
+            cwd=output_dir,
             capture_output=True,
             text=True,
             check=True
@@ -297,14 +400,14 @@ def generate_latex_summary(
         
         # Run twice for references (if any)
         subprocess.run(
-            [pdflatex, "-interaction=nonstopmode", "-output-directory", str(OUTPUT_DIR), str(tex_path)],
-            cwd=OUTPUT_DIR,
+            [pdflatex, "-interaction=nonstopmode", "-output-directory", str(output_dir), str(tex_path)],
+            cwd=output_dir,
             capture_output=True,
             text=True,
             check=False
         )
         
-        pdf_path = OUTPUT_DIR / "executive_summary.pdf"
+        pdf_path = output_dir / "executive_summary.pdf"
         if pdf_path.exists():
             return str(pdf_path)
         else:

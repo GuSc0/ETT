@@ -257,6 +257,89 @@ def aggregate_by_groups(
     return result
 
 
+# Single synthetic group id for exec summary (all participants, no group split)
+EXEC_SUMMARY_GROUP_ID = "All participants"
+
+
+def aggregate_all_participants(
+    df: pd.DataFrame,
+    selected_tasks: List[str],
+    deselected_params: List[str],
+    mode: str,
+    parameter_weights: Optional[Dict[str, float]] = None
+) -> Dict[str, Dict]:
+    """
+    Aggregate metrics over ALL participants from the dataframe (no group filtering).
+    Used for executive summary so groups play no role; only selected tasks apply.
+
+    Returns the same nested structure as aggregate_by_groups but with a single
+    group key EXEC_SUMMARY_GROUP_ID ("All participants").
+    """
+    if df is None or df.empty:
+        raise ValueError("DataFrame is None or empty.")
+
+    if not selected_tasks:
+        raise ValueError("No tasks selected.")
+
+    all_participants = df["Participant"].astype(str).unique().tolist()
+    if not all_participants:
+        raise ValueError("No participants found in the data.")
+
+    active_parameters = [p for p in PARAMETER_OPTIONS if p not in deselected_params]
+    if not active_parameters:
+        raise ValueError("All parameters are deselected.")
+
+    result: Dict[str, Dict] = {}
+    group_id = EXEC_SUMMARY_GROUP_ID
+    result[group_id] = {}
+    data_found = False
+
+    for task_id in selected_tasks:
+        result[group_id][task_id] = {}
+
+        for participant in all_participants:
+            participant_data = {}
+
+            for parameter in active_parameters:
+                if parameter == "Standard Deviation of TCT":
+                    continue
+                try:
+                    metrics = calculate_parameter_metrics(df, participant, task_id, parameter)
+                    if metrics:
+                        weight = (parameter_weights or {}).get(parameter, 1.0)
+                        if weight != 1.0:
+                            weighted_metrics = metrics.copy()
+                            weighted_metrics["mean"] = metrics["mean"] * weight
+                            weighted_metrics["min"] = metrics["min"] * weight
+                            weighted_metrics["max"] = metrics["max"] * weight
+                            weighted_metrics["median"] = metrics["median"] * weight
+                            weighted_metrics["q1"] = metrics["q1"] * weight
+                            weighted_metrics["q3"] = metrics["q3"] * weight
+                            weighted_metrics["std"] = metrics["std"] * weight
+                            participant_data[parameter] = weighted_metrics
+                        else:
+                            participant_data[parameter] = metrics
+                        data_found = True
+                except Exception:
+                    continue
+
+            if participant_data:
+                result[group_id][task_id][participant] = participant_data
+
+    if not data_found:
+        raise ValueError("No data found for the selected tasks and parameters.")
+
+    _add_tct_std_to_result(result, df, [group_id], selected_tasks, parameter_weights)
+
+    if mode == "Only group mean":
+        aggregated = _aggregate_to_group_means(result, parameter_weights)
+        if not aggregated:
+            raise ValueError("Failed to aggregate data to group means.")
+        return aggregated
+
+    return result
+
+
 def _add_tct_std_to_result(
     result: Dict[str, Dict],
     df: pd.DataFrame,

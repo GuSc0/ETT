@@ -24,7 +24,7 @@ from data_processor import (
     normalize_by_participant_baseline,
 )
 from dialogs import GroupParticipantsDialog, GroupTasksDialog, LoadingDialog
-from analysis import aggregate_by_groups
+from analysis import aggregate_by_groups, aggregate_all_participants, EXEC_SUMMARY_GROUP_ID
 from results_window import ResultsWindow
 from executive_summary import (
     generate_executive_summary,
@@ -1257,20 +1257,13 @@ class MainWindow(QMainWindow):
             )
             return
         
-        # Get ALL groups (regardless of checkbox selection)
-        effective_groups = state.get_effective_participant_groups()
-        all_groups = list(effective_groups.keys()) if effective_groups else []
-        
-        # Get ALL tasks (regardless of checkbox selection)
-        # Include all tasks including baseline tasks 0a/0b for complete summary
-        all_tasks = state.tasks_cache.copy() if state.tasks_cache else []
-        
-        if not all_groups:
-            QMessageBox.warning(self, "No Groups Available", "No participant groups found in the data.")
-            return
-        
-        if not all_tasks:
-            QMessageBox.warning(self, "No Tasks Available", "No tasks found in the data.")
+        # Exec summary: ignore groups, use ALL participants from the file; only tasks from checkboxes
+        selected_tasks = [tid for tid, cb in self.result_task_checkboxes.items() if cb.isChecked()]
+        if not selected_tasks:
+            selected_tasks = state.tasks_cache.copy() if state.tasks_cache else []
+
+        if not selected_tasks:
+            QMessageBox.warning(self, "No Tasks Available", "No tasks selected. Check at least one task (e.g. uncheck baseline to exclude it).")
             return
         
         mode = self.mode_combo.currentText()
@@ -1294,30 +1287,26 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         
         try:
-            # Aggregate data using ALL groups and tasks
-            aggregated_data = aggregate_by_groups(
+            # Exec summary: all participants from file, only selected tasks (no group filtering)
+            aggregated_data = aggregate_all_participants(
                 state.df,
-                all_groups,
-                all_tasks,
+                selected_tasks,
                 deselected,
                 mode,
                 parameter_weights
             )
-            
+
             if not aggregated_data:
                 loading.close()
-                QMessageBox.warning(self, "No Data", "No data available for the groups and tasks.")
+                QMessageBox.warning(self, "No Data", "No data available for the selected tasks.")
                 return
-            
-            # Generate LaTeX PDF directly (MikTeX is already verified above)
-            # Get TSV file path if available
+
+            # Generate LaTeX PDF (one synthetic group "All participants", only checked tasks)
             df_path = getattr(state, 'loaded_file_path', None)
-            
-            # Generate LaTeX PDF directly
             pdf_path = generate_latex_summary(
                 aggregated_data,
-                all_groups,
-                all_tasks,
+                [EXEC_SUMMARY_GROUP_ID],
+                selected_tasks,
                 active_parameters,
                 mode,
                 parameter_weights,
