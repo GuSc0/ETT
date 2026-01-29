@@ -732,8 +732,8 @@ class ResultsWindow(QMainWindow):
             # Layout: all groups side-by-side (1 row, num_groups columns)
             agg_cols = num_groups
             agg_rows = 1
-            # Calculate figure size: wider for more groups, consistent height
-            fig_width = 6 * num_groups + 2  # Extra space for legend on left
+            # Calculate figure size: wider for more groups, full width for charts
+            fig_width = 6 * num_groups
             fig_height = 7
             agg_fig = Figure(figsize=(fig_width, fig_height))
             agg_canvas = FigureCanvas(agg_fig)
@@ -747,10 +747,10 @@ class ResultsWindow(QMainWindow):
             agg_canvas.installEventFilter(wheel_filter)
             agg_canvas.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             
-            # Use gridspec for better control - create once before loop
+            # Use gridspec for better control - one column per group (legend at bottom)
             from matplotlib import gridspec
-            gs = gridspec.GridSpec(1, num_groups + 1, figure=agg_fig, 
-                                 width_ratios=[0.15] + [1] * num_groups,
+            gs = gridspec.GridSpec(1, num_groups, figure=agg_fig,
+                                 width_ratios=[1] * num_groups,
                                  wspace=0.3, hspace=0.2)
             
             # Collect all labels for shared legend (only from first group since all groups have same tasks)
@@ -761,7 +761,7 @@ class ResultsWindow(QMainWindow):
                 if group_id not in normalized_data:
                     continue
                 
-                ax = agg_fig.add_subplot(gs[0, idx + 1], projection='polar')
+                ax = agg_fig.add_subplot(gs[0, idx], projection='polar')
                 group_data = normalized_data[group_id]
                 group_name = state.get_effective_group_names().get(group_id, group_id)
                 
@@ -828,20 +828,20 @@ class ResultsWindow(QMainWindow):
                 ax.set_ylim(0, 1)
                 ax.set_title(group_name, fontsize=12, fontweight='bold', pad=35)
                 ax.grid(True)
-                # Don't add individual legend - will use shared legend on the left
+                # Don't add individual legend - will use shared legend below
             
-            # Add shared legend vertically to the left of the first chart (only if we have labels)
+            # Reserve bottom space for legend (adaptive by number of legend rows)
+            ncol = min(4, len(shared_labels)) if shared_labels else 4
+            n_legend_rows = ((len(shared_labels) + ncol - 1) // ncol) if shared_labels else 0
+            bottom = min(0.35, 0.08 + n_legend_rows * 0.055)
+            agg_fig.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=bottom, wspace=0.3)
+            agg_fig.tight_layout(pad=2.0, rect=[0.05, bottom, 0.98, 0.95])
+            # Add shared legend below the charts (no overlap)
             if shared_handles:
-                # Create a single shared legend on the left side, vertically oriented
-                legend_ax = agg_fig.add_subplot(gs[0, 0])
-                legend_ax.axis('off')  # Hide axes
-                agg_fig.legend(shared_handles, shared_labels, 
-                              loc='center left', bbox_to_anchor=(0, 0.5),
-                              fontsize=9, frameon=True, ncol=1)
-            
-            # Use subplots_adjust to add explicit spacing between subplots
-            agg_fig.subplots_adjust(left=0.12, right=0.98, top=0.95, bottom=0.1, wspace=0.3)
-            agg_fig.tight_layout(pad=2.0, rect=[0.12, 0.1, 0.98, 0.95])  # Leave space for legend on left
+                legend_y = (0 + bottom) / 2
+                agg_fig.legend(shared_handles, shared_labels,
+                              loc='upper center', bbox_to_anchor=(0.5, legend_y),
+                              fontsize=9, frameon=True, ncol=ncol)
             scroll_layout.addWidget(agg_canvas)
             # Store aggregated canvas for export (None = aggregated view, not task-specific)
             self.radar_canvases.append((agg_canvas, None))
