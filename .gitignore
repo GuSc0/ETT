@@ -167,3 +167,6 @@ Thumbs.db
 
 # Cleanup folder (contains moved/archived files)
 cleanup/
+
+# Output folder (contains generated results)
+output/

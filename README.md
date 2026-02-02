@@ -42,6 +42,7 @@ python main.py
 - Group tasks with custom labels
 - Configure result display options
 - Deselect specific parameters from analysis
+- Export executive summaries to PDF (LaTeX/MikTeX or matplotlib)
 
 ## Changes from Original
 
@@ -64,3 +65,9 @@ python main.py
 - Python 3.8+
 - PyQt6
 - pandas
+- matplotlib
+- numpy
+
+### LaTeX PDF export (optional)
+
+The executive summary can be exported as a LaTeX-rendered PDF for a polished look. This requires **MiKTeX** (or another LaTeX distribution) to be installed and available on your PATH. See **[INSTALL_MIKTEX.md](INSTALL_MIKTEX.md)** for installation and troubleshooting. If you prefer not to install LaTeX, use the "Export to PDF (matplotlib)" option instead.
