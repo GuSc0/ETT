@@ -135,13 +135,6 @@ dmypy.json
 *.bcf
 *.run.xml
 
-# LaTeX output directories (keep source .tex files)
-eye_tracking_tool/output/*.pdf
-eye_tracking_tool/output/*.aux
-eye_tracking_tool/output/*.log
-eye_tracking_tool/output/*.out
-eye_tracking_tool/output/*.tex
-
 # IDE / Editor files
 .vscode/
 .idea/

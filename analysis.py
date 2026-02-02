@@ -3,6 +3,7 @@ Analysis functions for eye tracking data processing.
 """
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
@@ -235,7 +236,10 @@ def aggregate_by_groups(
                             data_found = True
                     except Exception as e:
                         # Log but continue with other parameters
-                        print(f"Warning: Failed to calculate {parameter} for {participant}/{task_id}: {e}")
+                        logging.warning(
+                            "Failed to calculate %s for %s/%s: %s",
+                            parameter, participant, task_id, e,
+                        )
                         continue
                 
                 if participant_data:

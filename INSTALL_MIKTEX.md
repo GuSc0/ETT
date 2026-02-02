@@ -61,7 +61,7 @@ If PDF generation fails:
    - If not, run: `miktex packages install <package-name>`
 
 3. Check the log file:
-   - Located in `eye_tracking_tool/output/executive_summary.log`
+   - In the executive summary output folder (e.g. `output/exec summary - YYYY-MM-DD_HH-MM-SS/`), check the `.log` file produced by pdflatex.
 
 ## Alternative: Use matplotlib PDF export
 

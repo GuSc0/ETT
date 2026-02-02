@@ -17,7 +17,11 @@ ETT/
 ├── executive_summary.py       # Executive summary text generation
 ├── executive_summary_latex.py # LaTeX PDF generation for executive summaries
 ├── executive_summary_template.tex # LaTeX template for PDF generation
+├── test_functionality.py      # Tests data loading and analysis (no GUI)
 ├── requirements.txt           # Python dependencies
+├── ARCHITECTURE.md            # Software architecture and data flow
+├── INSTALL_MIKTEX.md          # MiKTeX installation for LaTeX PDF export
+├── LICENSE                    # MIT License
 ├── Input/                     # Input data files (TSV format)
 └── output/                    # Export output directory (timestamped subfolders)
 ```
@@ -33,6 +37,13 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+Run `python test_functionality.py` to verify data loading and analysis (no GUI).
+
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — Software design and data flow
+- [INSTALL_MIKTEX.md](INSTALL_MIKTEX.md) — LaTeX PDF export setup and troubleshooting
 
 ## Features
 
@@ -71,3 +82,7 @@ python main.py
 ### LaTeX PDF export (optional)
 
 The executive summary can be exported as a LaTeX-rendered PDF for a polished look. This requires **MiKTeX** (or another LaTeX distribution) to be installed and available on your PATH. See **[INSTALL_MIKTEX.md](INSTALL_MIKTEX.md)** for installation and troubleshooting. If you prefer not to install LaTeX, use the "Export to PDF (matplotlib)" option instead.
+
+## License
+
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
